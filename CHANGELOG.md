@@ -1,4 +1,3 @@
-
 ## v2.9.1
 
 ### Fixed
@@ -22,9 +21,6 @@
 - **Socket Tear-Down Handling**: Covered bare exceptions (`except Exception: pass`) with correct logger output to catch elusive connection termination errors during cache invalidations.
 
 
-
-### Fixed
-- **Circuit Breaker Modbus IOException Trip (Issue #177):** Prevented general Modbus protocol read/write errors (e.g. invalid register queries, timeout from device logic) from tripping the global circuit breaker. The circuit breaker correctly restricts itself to hard connection failures again (ConnectionReset, Broken Pipe, etc.), effectively solving the "Connection lost repeatedly" loop introduced in 2.8.6 / 2.9.0.
 
 ## Release v2.9.0 – Performance, Architecture & Entity Optimization
 
