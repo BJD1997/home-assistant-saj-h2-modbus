@@ -29,6 +29,7 @@ from .modbus_utils import (
     try_read_registers,
     try_write_registers,
     ReconnectionNeededError,
+    BlockUnsupportedError,
     _CIRCUIT_BREAKER_CTX,
 )
 from .charge_control import (
@@ -47,6 +48,11 @@ FAST_UPDATE_INTERVAL = 10
 ULTRA_FAST_UPDATE_INTERVAL = 1
 STARTUP_DELAY_RUNNING = 1
 STARTUP_DELAY_MQTT = 30
+
+# A block is permanently excluded after this many consecutive unsupported responses.
+# Using 3 guards against a single garbled response; the device will give the same
+# deterministic rejection on every subsequent poll anyway.
+_BLOCK_PERMANENT_FAILURE_THRESHOLD = 3
 
 FAST_POLL_SENSORS = {
     "TotalLoadPower",
@@ -225,6 +231,12 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self._inverter_static_data_loaded_at: float | None = None
         self._warned_missing_states: bool = False
 
+        # Block-exclusion tracking: counts consecutive unsupported responses per
+        # reader function; once the threshold is reached the function is added to
+        # _permanently_failed_blocks and skipped for the rest of the session.
+        self._block_failure_counts: dict[str, int] = {}
+        self._permanently_failed_blocks: set = set()
+
     def _init_charge_control(self, use_ha_mqtt: bool) -> None:
         """Initialise charge/discharge control handler, setters and cache cleanup timer."""
         self._pending_charging_state = None
@@ -348,14 +360,38 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
             for group in _READER_GROUPS:
                 for method in group:
+                    if method in self._permanently_failed_blocks:
+                        continue
                     try:
                         res = await method(client, self._read_lock)
                         if isinstance(res, dict):
                             new_cache.update(res)
+                        # Clear any previous failure streak on success
+                        self._block_failure_counts.pop(method.__name__, None)
                     except ReconnectionNeededError:
                         await self.connection.notify_error()
                         await self.connection.reconnect()
                         raise
+                    except BlockUnsupportedError as e:
+                        count = self._block_failure_counts.get(method.__name__, 0) + 1
+                        self._block_failure_counts[method.__name__] = count
+                        if count >= _BLOCK_PERMANENT_FAILURE_THRESHOLD:
+                            self._permanently_failed_blocks.add(method)
+                            _LOGGER.warning(
+                                "Block %s permanently disabled: not supported by this "
+                                "device firmware. Skipping for the rest of this session. "
+                                "(%s)",
+                                method.__name__,
+                                e,
+                            )
+                        else:
+                            _LOGGER.debug(
+                                "Block %s unsupported by device (failure %d/%d): %s",
+                                method.__name__,
+                                count,
+                                _BLOCK_PERMANENT_FAILURE_THRESHOLD,
+                                e,
+                            )
                     except Exception as e:
                         _LOGGER.warning("Reader %s error: %s", method.__name__, e)
 

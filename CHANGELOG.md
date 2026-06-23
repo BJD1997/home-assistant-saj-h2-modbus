@@ -1,6 +1,10 @@
 
 ## v2.9.1
 
+### Fixed
+- **Permanent Block Exclusion for Unsupported Registers (Issues #177, #180, #183):** Register blocks that are not served by the device firmware (e.g. `additional_data_3_2` on SAJ H1 models and certain H2 hardware variants returning `ExceptionResponse` with code 65 or similar) are now automatically and permanently excluded from polling after 3 consecutive rejections. Previously, each poll wasted up to 10+ seconds on retries and filled the log with retry warnings before the circuit breaker opened and blanked all entities. Now: the first 3 rejections are logged at DEBUG level; on the 3rd, a single WARNING is emitted (`Block … permanently disabled: not supported by this device firmware`) and the block is skipped for the remainder of the session. No manual configuration or source-code edits required.
+- **Non-retriable ExceptionResponse:** All `ExceptionResponse` codes returned by the device (except code 4 — "Slave Device Failure", which may be transient) are now treated as deterministic rejections and raise immediately without retrying. This eliminates the 3-attempt backoff loop (previously ~10 s) whenever a device signals an unsupported register.
+
 ### Performance & Architecture
 - **Lock Management & Deadlock Prevention**: Replaced `threading.Lock` with `asyncio.Lock` in `hub.py`. Eliminated potential deadlocks when using nested `_lock_order_guard` and `_write_lock` combinations in the read-modify-write path.
 - **Entity State Updates (Fast-Poll)**: Overhauled `_cleanup_fast_listener` in `sensor.py` using a thread-safe `asyncio.Event` to eliminate race conditions and database-heavy double registrations during entity reloads.

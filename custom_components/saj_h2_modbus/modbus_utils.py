@@ -42,6 +42,12 @@ class ReconnectionNeededError(Exception):
     pass
 
 
+class BlockUnsupportedError(Exception):
+    """Raised when a register block is permanently unsupported by the device firmware."""
+
+    pass
+
+
 class CircuitBreaker:
     """Generic circuit breaker pattern for protecting against cascading failures.
 
@@ -556,9 +562,14 @@ async def try_read_registers(
         # Detect specific exception error early
         if isinstance(response, ExceptionResponse):
             exc_code = getattr(response, "exception_code", None)
-            if exc_code in (1, 2, 3):  # 1: Illegal Function, 2: Illegal Data Address, 3: Illegal Data Value
-                raise ValueError(f"Unsupported register or address (Exception code {exc_code})")
-            raise ModbusIOException(f"General Modbus read error (Code: {exc_code})")
+            if exc_code == 4:
+                # Slave Device Failure — may be transient, allow retries
+                raise ModbusIOException(f"General Modbus read error (Code: {exc_code})")
+            # All other codes (1=Illegal Function, 2=Illegal Data Address,
+            # 3=Illegal Data Value, 65=device-specific NAK, …) are deterministic
+            # rejections — the device will never serve this register, retrying
+            # is pointless and wastes 10+ seconds per poll cycle.
+            raise ValueError(f"Unsupported register or address (Exception code {exc_code})")
 
         if not hasattr(response, "registers"):
             raise ModbusIOException("No registers in response")
