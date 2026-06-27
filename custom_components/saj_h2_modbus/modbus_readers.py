@@ -8,7 +8,7 @@ from pymodbus.client.mixin import ModbusClientMixin
 from asyncio import Lock
 
 from .const import DEVICE_STATUSSES, FAULT_MESSAGES
-from .modbus_utils import try_read_registers, ReconnectionNeededError
+from .modbus_utils import try_read_registers, ReconnectionNeededError, BlockUnsupportedError
 
 DataDict: TypeAlias = Dict[str, Any]
 ReadResult: TypeAlias = tuple[DataDict, List[str]]
@@ -352,10 +352,10 @@ async def _read_modbus_data(
     try:
         regs = await try_read_registers(client, lock, 1, start_address, count)
     except ValueError as ve:
-        # Known error, e.g. Exception 131/0
-        _LOGGER.debug("Unsupported Modbus register for %s: %s", data_key, ve)
-        errors.append(f"{data_key}: {ve}")
-        return new_data, errors
+        # Device explicitly rejected this register block (ExceptionResponse with
+        # a deterministic code). Signal upstream so the hub can track failures
+        # and permanently exclude the block after N consecutive rejections.
+        raise BlockUnsupportedError(f"{data_key}: {ve}") from ve
     except ReconnectionNeededError:
         # CRITICAL FIX: Re-raise reconnection errors so the Hub can handle them!
         raise

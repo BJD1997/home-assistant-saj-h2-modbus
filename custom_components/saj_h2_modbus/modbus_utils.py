@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 import socket
 
 from pymodbus.exceptions import ConnectionException, ModbusIOException
+from pymodbus.pdu import ExceptionResponse
 
 # Alias AsyncModbusTcpClient as ModbusTcpClient to retain compatibility with existing type hints
 from pymodbus.client import AsyncModbusTcpClient as ModbusTcpClient
@@ -37,6 +38,12 @@ ENABLE_DETAILED_MODBUS_WRITE_LOGGING = (
 
 class ReconnectionNeededError(Exception):
     """Indicates that a reconnect is needed due to communication failure."""
+
+    pass
+
+
+class BlockUnsupportedError(Exception):
+    """Raised when a register block is permanently unsupported by the device firmware."""
 
     pass
 
@@ -152,25 +159,6 @@ _RECONNECT_LOCK: asyncio.Lock = asyncio.Lock()
 # instead of immediately retrying on a still-broken socket.
 _RECONNECT_DONE: asyncio.Event = asyncio.Event()
 _RECONNECT_DONE.set()  # Initially set: no reconnect in progress
-
-
-# Global Modbus config storage
-class ModbusGlobalConfig:
-    host: str | None = None
-    port: int | None = None
-    hass: Any | None = None
-
-
-def set_modbus_config(host: str, port: int, hass: Any = None) -> None:
-    ModbusGlobalConfig.host = host
-    ModbusGlobalConfig.port = port
-    ModbusGlobalConfig.hass = hass
-    _LOGGER.debug(
-        "Global Modbus config set: %s:%s (hass configured: %s)",
-        host,
-        port,
-        hass is not None,
-    )
 
 
 # ============================================================================
@@ -475,8 +463,8 @@ async def _on_modbus_retry(
                             "Closing Modbus socket (fd=%s) due to %s", fileno, e
                         )
                     client.close()
-                except Exception:
-                    pass  # Ignore errors during close
+                except Exception as close_err:
+                    logger.debug("Exception during socket close: %s", close_err, exc_info=True)
 
                 try:
                     await _connect_client_inplace(client, host, port)
@@ -548,8 +536,8 @@ async def try_read_registers(
     base_delay: float = DEFAULT_READ_BASE_DELAY,
     cap_delay: float = DEFAULT_READ_CAP_DELAY,
 ) -> list[int]:
-    host = ModbusGlobalConfig.host
-    port = ModbusGlobalConfig.port
+    host = getattr(client, "_saj_host", None)
+    port = getattr(client, "_saj_port", None)
     if host is None or port is None:
         raise ReconnectionNeededError(
             "Modbus client not configured with host and port."
@@ -572,11 +560,16 @@ async def try_read_registers(
         )
 
         # Detect specific exception error early
-        if response.isError():
+        if isinstance(response, ExceptionResponse):
             exc_code = getattr(response, "exception_code", None)
-            if exc_code in (1, 2, 3):  # 1: Illegal Function, 2: Illegal Data Address, 3: Illegal Data Value
-                raise ValueError(f"Unsupported register or address (Exception code {exc_code})")
-            raise ModbusIOException(f"General Modbus read error (Code: {exc_code})")
+            if exc_code == 4:
+                # Slave Device Failure — may be transient, allow retries
+                raise ModbusIOException(f"General Modbus read error (Code: {exc_code})")
+            # All other codes (1=Illegal Function, 2=Illegal Data Address,
+            # 3=Illegal Data Value, 65=device-specific NAK, …) are deterministic
+            # rejections — the device will never serve this register, retrying
+            # is pointless and wastes 10+ seconds per poll cycle.
+            raise ValueError(f"Unsupported register or address (Exception code {exc_code})")
 
         if not hasattr(response, "registers"):
             raise ModbusIOException("No registers in response")
@@ -630,8 +623,8 @@ async def try_write_registers(
     base_delay: float = DEFAULT_WRITE_BASE_DELAY,
     cap_delay: float = DEFAULT_WRITE_CAP_DELAY,
 ) -> bool:
-    host = ModbusGlobalConfig.host
-    port = ModbusGlobalConfig.port
+    host = getattr(client, "_saj_host", None)
+    port = getattr(client, "_saj_port", None)
     if host is None or port is None:
         raise ReconnectionNeededError(
             "Modbus client not configured with host and port."
@@ -662,7 +655,7 @@ async def try_write_registers(
                 address=address,
                 values=values,
             )
-        if result.isError():
+        if isinstance(result, ExceptionResponse):
             raise ModbusIOException("Write response error")
 
         if ENABLE_DETAILED_MODBUS_WRITE_LOGGING:

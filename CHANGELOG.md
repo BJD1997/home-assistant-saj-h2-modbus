@@ -1,7 +1,26 @@
-## Release v2.9.1 – Hotfix
+## v2.9.1
 
 ### Fixed
-- **Circuit Breaker Modbus IOException Trip (Issue #177):** Prevented general Modbus protocol read/write errors (e.g. invalid register queries, timeout from device logic) from tripping the global circuit breaker. The circuit breaker correctly restricts itself to hard connection failures again (ConnectionReset, Broken Pipe, etc.), effectively solving the "Connection lost repeatedly" loop introduced in 2.8.6 / 2.9.0.
+- **Permanent Block Exclusion for Unsupported Registers (Issues #177, #180, #183):** Register blocks that are not served by the device firmware (e.g. `additional_data_3_2` on SAJ H1 models and certain H2 hardware variants returning `ExceptionResponse` with code 65 or similar) are now automatically and permanently excluded from polling after 3 consecutive rejections. Previously, each poll wasted up to 10+ seconds on retries and filled the log with retry warnings before the circuit breaker opened and blanked all entities. Now: the first 3 rejections are logged at DEBUG level; on the 3rd, a single WARNING is emitted (`Block … permanently disabled: not supported by this device firmware`) and the block is skipped for the remainder of the session. No manual configuration or source-code edits required.
+- **Non-retriable ExceptionResponse:** All `ExceptionResponse` codes returned by the device (except code 4 — "Slave Device Failure", which may be transient) are now treated as deterministic rejections and raise immediately without retrying. This eliminates the 3-attempt backoff loop (previously ~10 s) whenever a device signals an unsupported register.
+
+### Performance & Architecture
+- **Lock Management & Deadlock Prevention**: Replaced `threading.Lock` with `asyncio.Lock` in `hub.py`. Eliminated potential deadlocks when using nested `_lock_order_guard` and `_write_lock` combinations in the read-modify-write path.
+- **Entity State Updates (Fast-Poll)**: Overhauled `_cleanup_fast_listener` in `sensor.py` using a thread-safe `asyncio.Event` to eliminate race conditions and database-heavy double registrations during entity reloads.
+- **UI Responsiveness (Dual-Debounce)**: Re-wrote optimistic UI state flushes in `charge_control.py`. Immediate UI confirmation happens after 200 ms (`_FIRST_FLUSH_DELAY`), while rapid sequential slides/clicks are throttled at 500 ms.
+- **Queue Stall Prevention**: Capped the exponential backoff for failing Modbus writes in `charge_control.py` to a maximum of 2 seconds (with random jitter) instead of stalling the command queue for up to 7 seconds.
+- **Cache Eviction Fix**: RMW-Lock cache limit (64 locks) logic is now completely robust, leveraging LRU and TTL sweeps combined to smoothly avoid infinite caching and silent eviction failures.
+- **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
+
+### Fixes & Code Quality
+- **Async Unload Robustness**: Wrapped each step in `async_unload_entry` in explicit `try/except` guards to ensure `connection.close()` executes even if tasks like `mqtt.stop()` crash, preventing socket memory leaks.
+- **TOCTOU Race Condition**: Fixed a TOCTOU (Time-Of-Check to Time-Of-Use) loop evasion in `_async_update_fast`, ensuring ultra-fast callbacks reliably pause during write operations and catch up correctly via atomic lock flags.
+- **Duplicate MQTT Publishing**: Mitigated a bug where fast-poll/ultra-fast sensors were accidentally pushed to the broker twice (once by the fast loop, once via 60s slow loop `mqtt_publish_all`).
+- **Decoupling Global State**: Removed instance collision paths by stripping `ModbusGlobalConfig` singletons and pushing host/port contexts directly to the Modbus client objects.
+- **API Modernization**: Switched deprecated `async_create_background_task` calls to the standard `async_create_task` HA Core API in `utils.py`.
+- **Socket Tear-Down Handling**: Covered bare exceptions (`except Exception: pass`) with correct logger output to catch elusive connection termination errors during cache invalidations.
+
+
 
 ## Release v2.9.0 – Performance, Architecture & Entity Optimization
 
