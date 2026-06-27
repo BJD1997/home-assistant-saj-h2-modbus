@@ -234,8 +234,11 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         # Block-exclusion tracking: counts consecutive unsupported responses per
         # reader function; once the threshold is reached the function is added to
         # _permanently_failed_blocks and skipped for the rest of the session.
+        # Daily reset (see _async_cleanup_cache) allows firmware updates to take
+        # effect without requiring an HA restart.
         self._block_failure_counts: dict[str, int] = {}
         self._permanently_failed_blocks: set = set()
+        self._last_exclusion_reset_time: float = time.monotonic()
 
     def _init_charge_control(self, use_ha_mqtt: bool) -> None:
         """Initialise charge/discharge control handler, setters and cache cleanup timer."""
@@ -805,9 +808,27 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
     async def _async_cleanup_cache(self, now=None) -> None:
-        """Periodically clean up stale connection cache entries."""
+        """Periodically clean up stale connection cache entries and reset daily exclusions."""
         await self.connection.cleanup_cache()
         await self._cleanup_rmw_locks()
+
+        # Reset exclusion-liste every 24 hours to allow firmware updates to take effect
+        # without requiring an HA restart. If a block is still unsupported, it will
+        # be re-excluded after failing again.
+        now_time = time.monotonic()
+        if now_time - self._last_exclusion_reset_time > 86400:  # 24 hours in seconds
+            if self._permanently_failed_blocks:
+                excluded_count = len(self._permanently_failed_blocks)
+                excluded_names = ", ".join(m.__name__ for m in self._permanently_failed_blocks)
+                _LOGGER.info(
+                    "Daily exclusion-list reset: re-enabling %d previously failed register blocks "
+                    "(%s). These will be retested and re-excluded if unsupported.",
+                    excluded_count,
+                    excluded_names,
+                )
+                self._permanently_failed_blocks.clear()
+                self._block_failure_counts.clear()
+            self._last_exclusion_reset_time = now_time
 
     @asynccontextmanager
     async def _lock_order_guard(self, name: str):
