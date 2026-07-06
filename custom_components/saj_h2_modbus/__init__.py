@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.const import (
     CONF_HOST,
     CONF_NAME,
@@ -52,9 +53,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     start_time = time.monotonic()
 
     hub = await _create_hub(hass, entry)
-
-    if not hub:
-        return False
 
     hass.data[DOMAIN][entry.entry_id] = {
         "hub": hub,
@@ -153,9 +151,13 @@ async def _create_hub(hass: HomeAssistant, entry: ConfigEntry) -> SAJModbusHub:
         )
 
         return hub
+    except ConfigEntryNotReady:
+        raise
     except Exception as e:
         _LOGGER.error(f"Failed to set up SAJ Modbus hub: {e}")
-        return None
+        raise ConfigEntryNotReady(
+            f"Failed to set up SAJ Modbus hub: {e}"
+        ) from e
 
 
 def _create_device_info(entry: ConfigEntry) -> dict:

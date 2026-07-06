@@ -663,7 +663,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self.updating_settings = True
         try:
             # Update Services
-            self.connection.update_config(host, port)
+            await self.connection.update_config(host, port)
 
             # Restart cache-cleanup timer so it fires relative to the new config change,
             # not from whenever the integration was first set up.
