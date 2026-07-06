@@ -186,6 +186,7 @@ class ChargeSettingHandler:
         # Debounce for HA state flushes
         self._flush_pending: bool = False
         self._last_flush_time: float = 0.0
+        self._flush_handle: asyncio.TimerHandle | None = None
         # Locks removed
         # Cache removed
 
@@ -253,7 +254,8 @@ class ChargeSettingHandler:
         except asyncio.CancelledError:
             _LOGGER.debug("Command queue processing cancelled")
         finally:
-            self._is_processing = False
+            async with self._processing_lock:
+                self._is_processing = False
 
     async def _execute_command(self, command: Command) -> None:
         """Executes a single command based on its type."""
@@ -266,6 +268,14 @@ class ChargeSettingHandler:
     async def shutdown(self) -> None:
         """Stop queue processing and drain pending commands."""
         self._stop_processing = True
+
+        # Cancel any pending debounced flush so it can't fire after teardown
+        # and call async_set_updated_data on an already-unloaded coordinator.
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        self._flush_pending = False
+
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             try:
@@ -592,12 +602,13 @@ class ChargeSettingHandler:
             delay = max(_FLUSH_MIN_INTERVAL, _SUBSEQUENT_FLUSH_DELAY - (time.monotonic() - self._last_flush_time))
             
         if delay <= 0.0:
-            self.hub.hass.loop.call_soon(self._do_flush)
+            self._flush_handle = self.hub.hass.loop.call_soon(self._do_flush)
         else:
-            self.hub.hass.loop.call_later(delay, self._do_flush)
+            self._flush_handle = self.hub.hass.loop.call_later(delay, self._do_flush)
 
     def _do_flush(self) -> None:
         """Perform the actual state flush and reset the debounce guard."""
+        self._flush_handle = None
         self._flush_pending = False
         self._last_flush_time = time.monotonic()
         self.hub.async_set_updated_data(self.hub.inverter_data)
