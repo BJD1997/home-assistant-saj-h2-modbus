@@ -69,6 +69,9 @@ class CircuitBreaker:
         self.last_failure_time = 0.0
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
         self._name = name
+        # Guards state transitions; call() itself may be invoked concurrently
+        # from multiple polling loops (slow/fast/ultra-fast) sharing one breaker.
+        self._state_lock = asyncio.Lock()
 
     async def call(
         self,
@@ -92,33 +95,51 @@ class CircuitBreaker:
             def should_trip(_: Exception) -> bool:
                 return True
 
-        if self.state == "OPEN":
-            if now - self.last_failure_time > self.timeout:
-                self.state = "HALF_OPEN"
-                _LOGGER.info(
-                    "%s Circuit Breaker transitioning to HALF_OPEN", self._name
+        # Decide (under lock) whether this call may proceed, and whether it is
+        # the single probe call responsible for a HALF_OPEN -> CLOSED/OPEN
+        # transition. Without the lock, concurrent callers could all observe
+        # OPEN + timeout-elapsed and each flip to HALF_OPEN, letting multiple
+        # probes hit a still-down device at once.
+        is_probe = False
+        async with self._state_lock:
+            if self.state == "OPEN":
+                if now - self.last_failure_time > self.timeout:
+                    self.state = "HALF_OPEN"
+                    is_probe = True
+                    _LOGGER.info(
+                        "%s Circuit Breaker transitioning to HALF_OPEN", self._name
+                    )
+                else:
+                    raise ConnectionError(f"{self._name} Circuit Breaker is OPEN")
+            elif self.state == "HALF_OPEN":
+                # A probe is already in flight; reject further calls until it
+                # resolves instead of allowing concurrent probes.
+                raise ConnectionError(
+                    f"{self._name} Circuit Breaker is HALF_OPEN (probe in progress)"
                 )
-            else:
-                raise ConnectionError(f"{self._name} Circuit Breaker is OPEN")
 
         try:
             result = await func(*args, **kwargs)
-            if self.state == "HALF_OPEN":
-                self.state = "CLOSED"
-                self.failure_count = 0
-                _LOGGER.info("%s Circuit Breaker transitioning to CLOSED", self._name)
+            async with self._state_lock:
+                if is_probe or self.state == "HALF_OPEN":
+                    self.state = "CLOSED"
+                    self.failure_count = 0
+                    _LOGGER.info(
+                        "%s Circuit Breaker transitioning to CLOSED", self._name
+                    )
             return result
         except Exception as e:
             if should_trip(e):
-                self.failure_count += 1
-                self.last_failure_time = now
-                if self.failure_count >= self.failure_threshold:
-                    self.state = "OPEN"
-                    _LOGGER.warning(
-                        "%s Circuit Breaker OPEN after %s failures",
-                        self._name,
-                        self.failure_count,
-                    )
+                async with self._state_lock:
+                    self.failure_count += 1
+                    self.last_failure_time = time.monotonic()
+                    if is_probe or self.failure_count >= self.failure_threshold:
+                        self.state = "OPEN"
+                        _LOGGER.warning(
+                            "%s Circuit Breaker OPEN after %s failures",
+                            self._name,
+                            self.failure_count,
+                        )
             raise
 
 
