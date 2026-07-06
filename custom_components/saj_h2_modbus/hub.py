@@ -891,28 +891,33 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     self.hass, self._async_update_fast(ultra=True), logger=_LOGGER
                 )
 
-    async def _read_registers(self, address: int, count: int) -> list[int]:
+    async def _wait_for_write_done(self) -> None:
         """
-        Helper for charge_control.py to read via connection service.
-
-        Waits for any pending write operation before reading.
+        Wait for any pending write operation to finish – bounded to prevent
+        infinite hang if _write_done is accidentally never set (defensive timeout).
         """
-        # Wait for any pending write operation – bounded to prevent infinite hang
-        # if _write_done is accidentally never set (defensive timeout).
         try:
             await asyncio.wait_for(self._write_done.wait(), timeout=15.0)
         except asyncio.TimeoutError:
             _LOGGER.error(
-                "_read_registers: _write_done not set after 15 s – "
+                "_wait_for_write_done: _write_done not set after 15 s – "
                 "write operation appears stuck. Resetting write state to prevent deadlock."
             )
             async with self._write_lock:
                 self._pending_writes = 0
                 self._write_done.set()
             raise RuntimeError(
-                "_read_registers: _write_done not set after 15 s – "
+                "_wait_for_write_done: _write_done not set after 15 s – "
                 "write operation appears stuck"
             )
+
+    async def _read_registers(self, address: int, count: int) -> list[int]:
+        """
+        Helper for charge_control.py to read via connection service.
+
+        Waits for any pending write operation before reading.
+        """
+        await self._wait_for_write_done()
 
         async with self._lock_order_guard("slow"):
             client = await self.connection.get_client()
@@ -953,6 +958,12 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     self._rmw_locks.move_to_end(address)
                     self._rmw_locks_last_access[address] = time.monotonic()
                 lock = self._rmw_locks[address]
+
+            # Wait for any in-flight write to finish BEFORE acquiring the
+            # per-address RMW lock, so the lock isn't held for up to 15s
+            # while merely waiting on an unrelated pending write.
+            await self._wait_for_write_done()
+
             async with lock:
                 current_regs = await self._read_registers(address, 1)
                 if not current_regs:

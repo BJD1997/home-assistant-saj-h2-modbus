@@ -231,6 +231,8 @@ class MqttPublisher:
         # Publish rate-limiting tracking
         self._publish_timestamps: dict[str, float] = {}
         self._min_publish_interval: float = 2.0  # Min 2s between repeats
+        self._publish_timestamps_ttl: float = 3600.0  # Prune entries idle > 1h
+        self._last_publish_timestamps_cleanup: float = 0.0
 
         # Log throttling
         self._last_no_connection_log = 0.0
@@ -518,6 +520,19 @@ class MqttPublisher:
 
         messages = []
         now = time.monotonic()
+
+        # Opportunistically prune stale entries so the dict doesn't grow
+        # unbounded if sensor keys change over the integration's lifetime.
+        if now - self._last_publish_timestamps_cleanup > self._publish_timestamps_ttl:
+            self._last_publish_timestamps_cleanup = now
+            stale_keys = [
+                key
+                for key, ts in self._publish_timestamps.items()
+                if now - ts > self._publish_timestamps_ttl
+            ]
+            for key in stale_keys:
+                del self._publish_timestamps[key]
+
         for key, value in data.items():
             safe_key = key.split("/")[-1] if "/" in key else key
 
