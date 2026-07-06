@@ -166,7 +166,7 @@ class BaseSajSwitch(CoordinatorEntity, SwitchEntity):
                     return
                 await setter(desired_state)
 
-            self._last_switch_time = time.time()
+            self._last_switch_time = time.monotonic()
             pending_value = getattr(self._hub, self._pending_attr, None)
             _LOGGER.debug("Pending %s set to: %s", self._pending_attr, pending_value)
 
@@ -203,7 +203,7 @@ class BaseSajSwitch(CoordinatorEntity, SwitchEntity):
         return state_value and app_mode_value == 1
 
     def _allow_switch(self) -> bool:
-        current_time = time.time()
+        current_time = time.monotonic()
         elapsed = current_time - self._last_switch_time
         if elapsed < self._switch_timeout:
             remaining = round(self._switch_timeout - elapsed, 1)
