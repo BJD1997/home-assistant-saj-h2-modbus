@@ -210,6 +210,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self._write_lock = asyncio.Lock()
         self._write_done = asyncio.Event()
         self._write_done.set()
+        self._pending_writes = 0
         self._ultra_fast_pending = False
 
         self.inverter_data: dict[str, Any] = {}
@@ -864,8 +865,12 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 f"Direct write to merge-locked register 0x{address:04x} is not allowed; use merge_write_register()."
             )
 
-        # Atomar: write_done löschen + ultra_fast_pending setzen
+        # Track pending writes with a counter so _write_done is only set once
+        # ALL concurrently in-flight writes have completed (a plain clear/set
+        # pair would let a second write's completion prematurely mark
+        # _write_done while an earlier write is still in flight).
         async with self._write_lock:
+            self._pending_writes += 1
             self._write_done.clear()
             self._ultra_fast_pending = True
 
@@ -876,7 +881,10 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     client, self._write_lock, 1, address, value
                 )
         finally:
-            self._write_done.set()
+            async with self._write_lock:
+                self._pending_writes = max(0, self._pending_writes - 1)
+                if self._pending_writes == 0:
+                    self._write_done.set()
             if self.ultra_fast_enabled and self._ultra_fast_pending:
                 self._ultra_fast_pending = False
                 create_logged_task(
@@ -898,7 +906,9 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 "_read_registers: _write_done not set after 15 s – "
                 "write operation appears stuck. Resetting write state to prevent deadlock."
             )
-            self._write_done.set()
+            async with self._write_lock:
+                self._pending_writes = 0
+                self._write_done.set()
             raise RuntimeError(
                 "_read_registers: _write_done not set after 15 s – "
                 "write operation appears stuck"
