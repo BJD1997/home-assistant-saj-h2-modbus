@@ -434,11 +434,26 @@ async def _on_modbus_retry(
             )
             try:
                 await asyncio.wait_for(_RECONNECT_DONE.wait(), timeout=10.0)
+                return
             except asyncio.TimeoutError:
+                if client.connected:
+                    logger.warning(
+                        "Reconnect wait timed out for %s, but client is connected again – "
+                        "proceeding",
+                        operation_name,
+                    )
+                    return
                 logger.warning(
-                    "Reconnect wait timed out for %s, continuing anyway", operation_name
+                    "Reconnect wait timed out for %s and client is still disconnected; "
+                    "the in-progress reconnect appears stuck. Attempting our own reconnect "
+                    "instead of retrying against a known-broken socket.",
+                    operation_name,
                 )
-            return
+                # Fall through to the reconnect logic below instead of returning
+                # blindly. _RECONNECT_LOCK may still be held by the stuck task;
+                # acquiring it here will simply wait for it to be released, and
+                # the double-check inside then decides whether reconnecting is
+                # still necessary.
 
         # Signal that a reconnect is starting so concurrent tasks wait.
         _RECONNECT_DONE.clear()

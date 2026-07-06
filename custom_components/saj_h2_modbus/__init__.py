@@ -80,7 +80,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    # Perform hub-specific unload first (stops fast coordinator, closes client)
+    # Unload platforms first so entities can still access a fully functional
+    # hub during their own teardown, then tear down the hub itself (stops
+    # fast coordinator, closes client).
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
     hub = hass.data[DOMAIN].get(entry.entry_id, {}).get("hub")
     if hub is not None:
         try:
@@ -88,8 +92,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.debug(f"Ignoring hub unload error: {e}")
 
-    # Unload platforms
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
     else:
