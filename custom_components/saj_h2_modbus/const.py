@@ -1985,11 +1985,13 @@ inverter_settings_sensors = [
         "name": "Battery Discharge Current Set",
         "key": "BatDisCurrSet",
         "icon": "current-dc",
+        "unit_of_measurement": UnitOfElectricCurrent.AMPERE,
     },
     {
         "name": "Battery Charge Current Set",
         "key": "BatChgCurrSet",
         "icon": "current-dc",
+        "unit_of_measurement": UnitOfElectricCurrent.AMPERE,
     },
     {
         "name": "Battery Status Display",

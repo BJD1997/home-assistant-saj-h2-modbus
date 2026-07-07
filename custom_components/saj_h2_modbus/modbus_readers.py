@@ -323,8 +323,8 @@ METER_A_DATA_MAP = [
 INVERTER_SETTINGS_MAP = [
     ("InvDisPowerSet", "16i", 1),  # 0x4023
     ("InvChgPowerSet", "16i", 1),  # 0x4024
-    ("BatDisCurrSet", "16i", 1),  # 0x4025
-    ("BatChgCurrSet", "16i", 1),  # 0x4026
+    ("BatDisCurrSet", "16i", 0.1),  # 0x4025 - ratio -1 -> A
+    ("BatChgCurrSet", "16i", 0.1),  # 0x4026 - ratio -1 -> A
     ("BatStatusDisp", "16u", 1),  # 0x4027
     ("BatProtocolSet", "16i", 1),  # 0x4028
     ("BatChgSocUpLimit", "16i", 1),  # 0x4029

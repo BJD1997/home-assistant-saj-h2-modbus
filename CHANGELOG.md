@@ -1,3 +1,8 @@
+## Unreleased
+
+### Added
+- **Inverter/Battery Setpoint Registers (0x4023-0x4030):** New reader `read_inverter_settings_data` exposes previously unread registers as sensors: `InvDisPowerSet`, `InvChgPowerSet`, `BatDisCurrSet`, `BatChgCurrSet`, `BatStatusDisp`, `BatProtocolSet`, `BatChgSocUpLimit`, `BatDisSocDowLimit`, `BatDODSet`, `BatResSoc`, and `MeterModeSet`. These closed a previously unread gap between `realtime_data` (ending at `0x4016`) and `additional_data_4` (starting at `0x4031`). `BatDisCurrSet` (`0x4025`) and `BatChgCurrSet` (`0x4026`) use a ratio of -1 (factor 0.1) and are reported in Amperes.
+
 ## v2.9.1
 
 ### Added
