@@ -320,6 +320,21 @@ METER_A_DATA_MAP = [
     ("Meter_A_Freq3", "16u", 0.01),
 ]
 
+INVERTER_SETTINGS_MAP = [
+    ("InvDisPowerSet", "16i", 1),  # 0x4023
+    ("InvChgPowerSet", "16i", 1),  # 0x4024
+    ("BatDisCurrSet", "16i", 1),  # 0x4025
+    ("BatChgCurrSet", "16i", 1),  # 0x4026
+    ("BatStatusDisp", "16u", 1),  # 0x4027
+    ("BatProtocolSet", "16i", 1),  # 0x4028
+    ("BatChgSocUpLimit", "16i", 1),  # 0x4029
+    ("BatDisSocDowLimit", "16i", 1),  # 0x402A
+    ("BatDODSet", "16i", 1),  # 0x402B
+    ("BatResSoc", "16i", 1),  # 0x402C
+    (None, "skip_bytes", 6),  # 0x402D-0x402F reserved
+    ("MeterModeSet", "16i", 1),  # 0x4030
+]
+
 SIDE_NET_DATA_MAP = [
     ("ROnGridOutVolt", "16u", 0.1),
     ("ROnGridOutCurr", "16u", 0.01),
@@ -551,6 +566,13 @@ _DATA_READ_CONFIG = {
         "count": 8,
         "decode_map": SIDE_NET_DATA_MAP,
         "data_key": "side_net_data",
+    },
+    "inverter_settings": {
+        "address": 0x4023,
+        "count": 14,
+        "decode_map": INVERTER_SETTINGS_MAP,
+        "data_key": "inverter_settings",
+        "default_factor": 1,
     },
 }
 
@@ -941,3 +963,8 @@ async def read_meter_a_data(client: ModbusTcpClient, lock: Lock) -> DataDict:
 async def read_side_net_data(client: ModbusTcpClient, lock: Lock) -> DataDict:
     """Reads side net data."""
     return await _read_configured_data(client, lock, "side_net_data")
+
+
+async def read_inverter_settings_data(client: ModbusTcpClient, lock: Lock) -> DataDict:
+    """Reads inverter/battery setpoint registers (0x4023-0x4030)."""
+    return await _read_configured_data(client, lock, "inverter_settings")

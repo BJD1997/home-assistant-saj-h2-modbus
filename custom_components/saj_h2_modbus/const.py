@@ -1970,6 +1970,64 @@ anti_reflux_sensors = [
     },
 ]
 
+inverter_settings_sensors = [
+    {
+        "name": "Inverter Discharge Power Set",
+        "key": "InvDisPowerSet",
+        "icon": "battery-arrow-down",
+    },
+    {
+        "name": "Inverter Charge Power Set",
+        "key": "InvChgPowerSet",
+        "icon": "battery-arrow-up",
+    },
+    {
+        "name": "Battery Discharge Current Set",
+        "key": "BatDisCurrSet",
+        "icon": "current-dc",
+    },
+    {
+        "name": "Battery Charge Current Set",
+        "key": "BatChgCurrSet",
+        "icon": "current-dc",
+    },
+    {
+        "name": "Battery Status Display",
+        "key": "BatStatusDisp",
+        "icon": "battery-alert",
+    },
+    {
+        "name": "Battery Protocol Set",
+        "key": "BatProtocolSet",
+        "icon": "cog-outline",
+    },
+    {
+        "name": "Battery Charge SOC Upper Limit",
+        "key": "BatChgSocUpLimit",
+        "icon": "battery-high",
+    },
+    {
+        "name": "Battery Discharge SOC Lower Limit",
+        "key": "BatDisSocDowLimit",
+        "icon": "battery-low",
+    },
+    {
+        "name": "Battery DOD Set",
+        "key": "BatDODSet",
+        "icon": "battery-minus",
+    },
+    {
+        "name": "Battery Reserved SOC",
+        "key": "BatResSoc",
+        "icon": "battery-lock",
+    },
+    {
+        "name": "Meter Mode Set",
+        "key": "MeterModeSet",
+        "icon": "cog-outline",
+    },
+]
+
 SENSOR_TYPES = {
     **create_sensor_descriptions(power_sensors_group, power_sensors),
     **create_sensor_descriptions(apparent_power_sensors_group, apparent_power_sensors),
@@ -1990,6 +2048,7 @@ SENSOR_TYPES = {
     **create_sensor_descriptions(schedule_sensors_group, battery_schedule_sensors),
     **create_sensor_descriptions(information_sensors_group, anti_reflux_sensors),
     **create_sensor_descriptions(power_factor_sensors_group, power_factor_sensors),
+    **create_sensor_descriptions(information_sensors_group, inverter_settings_sensors),
 }
 
 DEVICE_STATUSSES = {
