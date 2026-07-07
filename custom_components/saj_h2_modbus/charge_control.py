@@ -706,6 +706,7 @@ class ChargeSettingHandler:
         self, address: int, value: int, label: str = "register"
     ) -> bool:
         """Write register with exponential backoff retry."""
+        last_error: Exception | None = None
         for attempt in range(1, MAX_HANDLER_RETRIES + 1):
             try:
                 ok = await self.hub._write_register(address, int(value))
@@ -714,10 +715,14 @@ class ChargeSettingHandler:
                         "Successfully wrote %s=%s to 0x%04x", label, value, address
                     )
                     return True
+                last_error = None
             except ValueError as err:
+                # Deterministic rejection (e.g. merge-locked register) – retrying
+                # won't help, so abort immediately instead of burning attempts.
                 _LOGGER.error("Write aborted for %s: %s", label, err)
-                break
+                return False
             except Exception as e:
+                last_error = e
                 _LOGGER.error(
                     "Error writing %s (attempt %d/%d): %s",
                     label,
@@ -730,6 +735,23 @@ class ChargeSettingHandler:
                 import random
                 delay = min(2.0, 2 ** (attempt - 1)) + random.uniform(0.1, 0.5)
                 await asyncio.sleep(delay)
+
+        if last_error is not None:
+            _LOGGER.error(
+                "Giving up writing %s to 0x%04x after %d attempts; last error: %s",
+                label,
+                address,
+                MAX_HANDLER_RETRIES,
+                last_error,
+                exc_info=last_error,
+            )
+        else:
+            _LOGGER.error(
+                "Giving up writing %s to 0x%04x after %d attempts; device rejected the write",
+                label,
+                address,
+                MAX_HANDLER_RETRIES,
+            )
         return False
 
     async def _update_day_mask_and_power(

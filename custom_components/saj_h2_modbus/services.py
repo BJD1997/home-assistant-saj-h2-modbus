@@ -404,7 +404,7 @@ class MqttPublisher:
             prev_strategy = self.strategy
             self._determine_strategy(force=True)
             if self.strategy != prev_strategy:
-                self.stop()
+                await self.stop()
             return
 
         try:
@@ -455,7 +455,7 @@ class MqttPublisher:
         if rc != 0:
             _LOGGER.warning("Paho MQTT: Disconnected unexpectedly (rc=%s)", rc)
 
-    def update_config(
+    async def update_config(
         self,
         host,
         port,
@@ -509,14 +509,14 @@ class MqttPublisher:
         # Handle Strategy Switch or Config Change
         if self.strategy == self.STRATEGY_PAHO:
             if connection_changed or strategy_changed or not self._paho_client:
-                self.stop()
+                await self.stop()
                 create_logged_task(
                     self.hass, self._async_init_paho_client(), logger=_LOGGER
                 )
         else:
             # If we switched away from Paho, stop it
             if prev_strategy == self.STRATEGY_PAHO:
-                self.stop()
+                await self.stop()
 
     async def publish_data(self, data: dict[str, Any], force: bool = False) -> None:
         """Publishes dictionary data to MQTT based on selected strategy."""
@@ -623,13 +623,16 @@ class MqttPublisher:
             _LOGGER.debug("HA MQTT component loaded – re-evaluating MQTT strategy")
             self._determine_strategy(force=True)
 
-    def stop(self):
+    async def stop(self):
         """Stops the internal Paho client and cleans up event subscriptions."""
         if self._unsub_component_loaded:
             self._unsub_component_loaded()
             self._unsub_component_loaded = None
         if self._paho_client and self._paho_started:
             _LOGGER.info("Paho MQTT: Stopping client")
-            self._paho_client.loop_stop()
-            self._paho_client.disconnect()
             self._paho_started = False
+            client = self._paho_client
+            # loop_stop() joins the Paho network thread and can block briefly;
+            # run both calls in the executor so the event loop isn't blocked.
+            await self.hass.async_add_executor_job(client.loop_stop)
+            await self.hass.async_add_executor_job(client.disconnect)

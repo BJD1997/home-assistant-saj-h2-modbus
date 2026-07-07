@@ -685,7 +685,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
             # Update MQTT: pass explicit values from args (or recovered value)
-            self.mqtt.update_config(
+            await self.mqtt.update_config(
                 mqtt_host,
                 mqtt_port,
                 mqtt_user,
@@ -772,7 +772,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
             finally:
                 self._cache_cleanup_unsub = None
         try:
-            self.mqtt.stop()
+            await self.mqtt.stop()
         except Exception as e:
             _LOGGER.debug("Error during MQTT stop: %s", e)
         try:
