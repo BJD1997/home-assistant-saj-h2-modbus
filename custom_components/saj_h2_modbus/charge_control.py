@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -732,7 +733,6 @@ class ChargeSettingHandler:
                 )
 
             if attempt < MAX_HANDLER_RETRIES:
-                import random
                 delay = min(2.0, 2 ** (attempt - 1)) + random.uniform(0.1, 0.5)
                 await asyncio.sleep(delay)
 
