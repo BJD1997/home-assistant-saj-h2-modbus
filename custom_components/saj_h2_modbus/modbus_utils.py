@@ -129,8 +129,8 @@ class CircuitBreaker:
                     )
             return result
         except Exception as e:
-            if should_trip(e):
-                async with self._state_lock:
+            async with self._state_lock:
+                if should_trip(e):
                     self.failure_count += 1
                     self.last_failure_time = time.monotonic()
                     if is_probe or self.failure_count >= self.failure_threshold:
@@ -140,6 +140,18 @@ class CircuitBreaker:
                             self._name,
                             self.failure_count,
                         )
+                elif is_probe:
+                    # The probe reached the device but hit a non-connection error
+                    # (e.g. unsupported register / IO error). Connectivity itself is
+                    # fine, so close the breaker instead of leaving it stuck in
+                    # HALF_OPEN forever (which would reject every subsequent call).
+                    self.state = "CLOSED"
+                    self.failure_count = 0
+                    _LOGGER.info(
+                        "%s Circuit Breaker transitioning to CLOSED "
+                        "(probe reached device; non-connection error propagated)",
+                        self._name,
+                    )
             raise
 
 
