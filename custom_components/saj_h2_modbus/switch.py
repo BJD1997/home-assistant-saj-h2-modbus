@@ -60,11 +60,6 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
-    # Register entities in hass.data for direct access by charge_control
-    if "entities" not in hass.data[DOMAIN][entry.entry_id]:
-        hass.data[DOMAIN][entry.entry_id]["entities"] = []
-    hass.data[DOMAIN][entry.entry_id]["entities"].extend(entities)
-
     _LOGGER.info("Added SAJ switches")
 
 
