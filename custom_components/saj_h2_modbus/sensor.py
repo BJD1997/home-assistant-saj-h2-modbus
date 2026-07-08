@@ -208,6 +208,7 @@ class SajSensor(CoordinatorEntity, SensorEntity):
         # Update if value changed OR force_update is enabled
         force_update = bool(self._attr_force_update)
         if new_value != self._last_value or force_update:
+            old_value = self._last_value
             self._last_value = new_value
             self.async_write_ha_state()
 
@@ -215,7 +216,7 @@ class SajSensor(CoordinatorEntity, SensorEntity):
                 _LOGGER.debug(
                     "Fast update for %s: %s -> %s",
                     self._attr_name,
-                    self._last_value,
+                    old_value,
                     new_value,
                 )
 

@@ -26,6 +26,7 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **Correct Fast-Update Debug Log**: The fast-poll debug log (`Fast update for … : old -> new`) printed the new value on both sides because the cached value was overwritten before logging. It now captures the previous value first and shows the real transition.
 - **Removed Unused Switch Entity Registry**: The switch platform stored its entities in `hass.data[DOMAIN][entry.entry_id]["entities"]`, but nothing ever read that list. Removed the dead storage, which also prevented the list from growing across failed reloads.
 - **Async Unload Robustness**: Wrapped each step in `async_unload_entry` in explicit `try/except` guards to ensure `connection.close()` executes even if tasks like `mqtt.stop()` crash, preventing socket memory leaks.
 - **TOCTOU Race Condition**: Fixed a TOCTOU (Time-Of-Check to Time-Of-Use) loop evasion in `_async_update_fast`, ensuring ultra-fast callbacks reliably pause during write operations and catch up correctly via atomic lock flags.
