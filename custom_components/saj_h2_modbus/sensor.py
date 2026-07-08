@@ -261,5 +261,6 @@ class FastPollSensor(SajSensor):
     ):
         """Initialize the fast-poll sensor."""
         super().__init__(hub, device_info, description, is_fast_variant=True)
-        # Fast variants are always enabled by default for live monitoring
-        self._attr_entity_registry_enabled_default = True
+        # Enabled-default is inherited from the base description via
+        # SajSensor.__init__, so sensors the user intentionally disabled do
+        # not reappear through their fast variant.
