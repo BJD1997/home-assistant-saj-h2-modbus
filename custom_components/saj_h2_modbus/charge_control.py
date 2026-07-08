@@ -66,6 +66,10 @@ PENDING_FIELDS: list[tuple[str, str]] = (
         ("passive_bat_charge_power", "passive_bat_charge_power"),
         ("passive_bat_discharge_power", "passive_bat_discharge_power"),
         ("tou_outside_mode", "tou_outside_mode"),
+        ("ems_enable", "ems_enable"),
+        ("ems_keep_time", "ems_keep_time"),
+        ("ems_inv_output_limit", "ems_inv_output_limit"),
+        ("ems_inv_input_limit", "ems_inv_input_limit"),
         ("time_bat_dis", "time_bat_dis"),
     ]
 )
@@ -146,6 +150,25 @@ MODBUS_ADDRESSES = {
             "label": "passive battery discharge power",
         },
         "tou_outside_mode": {"address": 0x365F, "label": "tou outside mode"},
+        # --- EMS remote control block (protocol section 4.10) ---
+        # 0x8300 EMSEnable: bit0=EMS mode, bit1=inverter power restriction,
+        # bit2=BMS charge/discharge control. Auto-clears after ems_keep_time
+        # seconds without register refresh (hardware dead-man).
+        "ems_enable": {"address": 0x8300, "label": "EMS remote enable (bitmask)"},
+        # 0x8304 EMSKeepTime: seconds; watchdog window for the EMS block.
+        "ems_keep_time": {"address": 0x8304, "label": "EMS keep-alive time"},
+        # 0x8305 EMSInvGridDchgPower: max inverter grid-port OUTPUT,
+        # value = watts * 10000 / rated_power. 0 = full PV/output cutoff,
+        # 10000 = unlimited. Requires 0x8300 bit1 set.
+        "ems_inv_output_limit": {
+            "address": 0x8305,
+            "label": "EMS inverter grid-port output limit",
+        },
+        # 0x8306 EMSInvGridChgPower: max inverter grid-port INPUT, same scale.
+        "ems_inv_input_limit": {
+            "address": 0x8306,
+            "label": "EMS inverter grid-port input limit",
+        },
         "time_bat_dis": {
             "address": 0x3660,
             "label": "time-sharing battery charge/discharge allow",
