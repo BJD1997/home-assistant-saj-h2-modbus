@@ -934,7 +934,9 @@ async def read_passive_battery_data(client: ModbusTcpClient, lock: Lock) -> Data
                     mode, "Unknown mode (%s)" % mode
                 )
         return data
-    except ReconnectionNeededError:
+    except (ReconnectionNeededError, BlockUnsupportedError):
+        # Let these propagate so the hub can reconnect / permanently exclude
+        # this block instead of retrying an unsupported register every cycle.
         raise
     except Exception as e:
         _LOGGER.error("Error reading Passive Battery and Anti-Reflux data: %s", e)
