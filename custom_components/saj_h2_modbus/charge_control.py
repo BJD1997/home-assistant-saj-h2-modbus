@@ -8,7 +8,10 @@ import re
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
+
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_call_later
 
 if TYPE_CHECKING:
     from .hub import SAJModbusHub
@@ -187,7 +190,7 @@ class ChargeSettingHandler:
         # Debounce for HA state flushes
         self._flush_pending: bool = False
         self._last_flush_time: float = 0.0
-        self._flush_handle: asyncio.TimerHandle | None = None
+        self._flush_handle: Callable[[], None] | None = None
         # Locks removed
         # Cache removed
 
@@ -272,8 +275,9 @@ class ChargeSettingHandler:
 
         # Cancel any pending debounced flush so it can't fire after teardown
         # and call async_set_updated_data on an already-unloaded coordinator.
+        # async_call_later returns a cancel callback, not a TimerHandle.
         if self._flush_handle is not None:
-            self._flush_handle.cancel()
+            self._flush_handle()
             self._flush_handle = None
         self._flush_pending = False
 
@@ -602,12 +606,12 @@ class ChargeSettingHandler:
         else:
             delay = max(_FLUSH_MIN_INTERVAL, _SUBSEQUENT_FLUSH_DELAY - (time.monotonic() - self._last_flush_time))
             
-        if delay <= 0.0:
-            self._flush_handle = self.hub.hass.loop.call_soon(self._do_flush)
-        else:
-            self._flush_handle = self.hub.hass.loop.call_later(delay, self._do_flush)
+        self._flush_handle = async_call_later(
+            self.hub.hass, max(0.0, delay), self._do_flush
+        )
 
-    def _do_flush(self) -> None:
+    @callback
+    def _do_flush(self, now=None) -> None:
         """Perform the actual state flush and reset the debounce guard."""
         self._flush_handle = None
         self._flush_pending = False

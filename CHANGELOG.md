@@ -26,6 +26,7 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **HA-Native Flush Scheduling**: The debounced UI state flush in `charge_control.py` now uses Home Assistant's `async_call_later` helper instead of the raw `hass.loop.call_later`/`call_soon` timers, so the scheduled callback is properly tracked and cancelled by HA's event system.
 - **Module-Level `random` Import**: Moved the `random` import in `charge_control.py` out of the write-retry loop to module scope (minor cleanup, no behavior change).
 - **Correct Fast-Update Debug Log**: The fast-poll debug log (`Fast update for … : old -> new`) printed the new value on both sides because the cached value was overwritten before logging. It now captures the previous value first and shows the real transition.
 - **Removed Unused Switch Entity Registry**: The switch platform stored its entities in `hass.data[DOMAIN][entry.entry_id]["entities"]`, but nothing ever read that list. Removed the dead storage, which also prevented the list from growing across failed reloads.
