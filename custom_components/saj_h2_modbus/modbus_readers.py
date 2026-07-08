@@ -1,6 +1,7 @@
+from __future__ import annotations
 import logging
 import struct
-from typing import Dict, Any, List, TypeAlias
+from typing import Any, TypeAlias
 from pymodbus.client import AsyncModbusTcpClient as ModbusTcpClient
 from pymodbus.client.mixin import ModbusClientMixin
 
@@ -10,14 +11,14 @@ from asyncio import Lock
 from .const import DEVICE_STATUSSES, FAULT_MESSAGES
 from .modbus_utils import try_read_registers, ReconnectionNeededError, BlockUnsupportedError
 
-DataDict: TypeAlias = Dict[str, Any]
-ReadResult: TypeAlias = tuple[DataDict, List[str]]
+DataDict: TypeAlias = dict[str, Any]
+ReadResult: TypeAlias = tuple[DataDict, list[str]]
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _log_partial_errors(
-    data_key: str, errors: List[str], log_level_on_error: int
+    data_key: str, errors: list[str], log_level_on_error: int
 ) -> None:
     """Emit a single log entry for partial decode failures."""
     if not errors:
@@ -261,7 +262,7 @@ for i in range(7):
         (f"charge{p}_power_raw", "16u", 1),
     ]
 
-DISCHARGE_DATA_MAP: List[tuple] = []
+DISCHARGE_DATA_MAP: list[tuple] = []
 for i in range(7):
     p = "" if i == 0 else str(i + 1)
     DISCHARGE_DATA_MAP += [
@@ -354,14 +355,14 @@ async def _read_modbus_data(
     lock: Lock,
     start_address: int,
     count: int,
-    decode_instructions: List[tuple],
+    decode_instructions: list[tuple],
     data_key: str,
     default_decoder: str = "16u",
     default_factor: float = 0.01,
     log_level_on_error: int = logging.ERROR,
 ) -> ReadResult:
     """Helper function to read and decode Modbus data with partial-error resilience."""
-    errors: List[str] = []
+    errors: list[str] = []
     new_data: DataDict = {}
 
     try:
@@ -747,12 +748,12 @@ async def _read_phase_block(
     lock: Lock,
     start: int,
     count: int,
-    fields: List[tuple],
+    fields: list[tuple],
     key_prefix: str,
     *,
     default_factor: float = 1,
 ) -> DataDict:
-    decode: List[tuple] = []
+    decode: list[tuple] = []
     for phase in ("R", "S", "T"):
         for entry in fields:
             name, method, *fac = entry
@@ -839,7 +840,7 @@ async def _read_schedule_data(
     *,
     address: int,
     count: int,
-    decode_map: List[tuple],
+    decode_map: list[tuple],
     data_key: str,
     prefix: str,
     include_enable_flags: bool,
