@@ -158,6 +158,18 @@ MODBUS_ADDRESSES = {
 }
 
 
+# Packed slot registers (day_mask in the high byte, power_percent in the low
+# byte) must only be modified via read-modify-write (merge_write_register),
+# never through a direct _write_register call — a direct write would clobber
+# the other field. The state/mask registers 0x3604/0x3605 are covered
+# separately by hub._merge_locks.
+RMW_REGISTER_ADDRESSES: frozenset[int] = frozenset(
+    slot["day_mask_power"]
+    for mode_slots in MODBUS_ADDRESSES["slots"].values()
+    for slot in mode_slots
+)
+
+
 class CommandType(Enum):
     CHARGE_SLOT = "charge_slot"
     DISCHARGE_SLOT = "discharge_slot"

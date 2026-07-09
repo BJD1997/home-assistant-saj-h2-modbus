@@ -35,6 +35,7 @@ from .modbus_utils import (
 from .charge_control import (
     ChargeSettingHandler,
     PENDING_FIELDS,
+    RMW_REGISTER_ADDRESSES,
 )
 from .services import ModbusConnectionManager, MqttPublisher
 from .utils import get_config_values, create_logged_task
@@ -861,9 +862,11 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
         Uses dedicated write lock with priority over read operations.
         """
-        if not allow_merge_locked and address in self._merge_locks:
+        if not allow_merge_locked and (
+            address in self._merge_locks or address in RMW_REGISTER_ADDRESSES
+        ):
             raise ValueError(
-                f"Direct write to merge-locked register 0x{address:04x} is not allowed; use merge_write_register()."
+                f"Direct write to read-modify-write register 0x{address:04x} is not allowed; use merge_write_register()."
             )
 
         # Track pending writes with a counter so _write_done is only set once
