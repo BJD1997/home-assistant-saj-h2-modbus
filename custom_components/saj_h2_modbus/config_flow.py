@@ -96,10 +96,10 @@ class SAJModbusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Return the options flow to allow configuration changes after setup."""
-        return SAJModbusOptionsFlowHandler(config_entry)
+        return SAJModbusOptionsFlowHandler()
 
 
-class SAJModbusOptionsFlowHandler(config_entries.OptionsFlowWithConfigEntry):
+class SAJModbusOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle an options flow for SAJ Modbus."""
 
     def _get_topic_prefix_default(self) -> str:
