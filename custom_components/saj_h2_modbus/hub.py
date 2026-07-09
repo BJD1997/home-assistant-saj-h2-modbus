@@ -190,10 +190,13 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
     def _init_locks(self) -> None:
         """Initialise all asyncio locks and synchronisation primitives."""
-        # PERFORMANCE OPTIMIZATION: Separate locks for different polling intervals
-        # to reduce contention between ultra-fast (1s), fast (10s) and slow (60s) loops.
-        # Single lock for all reads because reader groups execute sequentially
-        self._read_lock = asyncio.Lock()
+        # SINGLE socket lock for ALL Modbus socket access (reads, writes and
+        # reconnect). pymodbus' AsyncModbusTcpClient cannot serve concurrent
+        # operations on the same TCP connection, so reads and writes must not
+        # run in parallel. The lock lives on the connection manager (with the
+        # client) so the reconnect path can hold the very same lock; _read_lock
+        # and _write_lock are kept as aliases to minimise call-site churn.
+        self._read_lock = self.connection.socket_lock
 
         # Merge locks for shared state/mask registers
         self._merge_locks: dict[int, asyncio.Lock] = {
@@ -208,8 +211,11 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self._rmw_lock_ttl: float = 3600.0  # 1 hour TTL
         self._rmw_dict_lock = asyncio.Lock()
 
-        # DEDICATED WRITE LOCK: Write operations have priority over read operations.
-        self._write_lock = asyncio.Lock()
+        # Writes share the same socket lock as reads (see above). Writer
+        # priority is preserved via the _write_done event: reads wait on it
+        # before acquiring the socket lock, and ultra-fast ticks skip entirely
+        # while a write is pending.
+        self._write_lock = self.connection.socket_lock
         self._write_done = asyncio.Event()
         self._write_done.set()
         self._pending_writes = 0

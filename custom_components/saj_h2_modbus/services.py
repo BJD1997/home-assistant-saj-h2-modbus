@@ -42,6 +42,14 @@ class ModbusConnectionManager:
         self._connection_lock = asyncio.Lock()
         self._reconnecting = False
 
+        # Single socket lock guarding ALL access to the one client socket:
+        # reads, writes and reconnect. Because pymodbus' AsyncModbusTcpClient
+        # cannot handle concurrent operations on the same TCP connection, every
+        # read/write serialises on this lock, and reconnect holds it exclusively
+        # so the socket is never closed under an in-flight operation.
+        # Lives here (with the client) so both reconnect paths can hold it.
+        self._socket_lock = asyncio.Lock()
+
         # ONE client object, created once and reused for the entire lifetime.
         # Reconnect = close() + connect() on this same object – never replaced.
         # This guarantees that all polling loops always reference the same socket.
@@ -72,6 +80,11 @@ class ModbusConnectionManager:
     def circuit_breaker(self) -> ModbusCircuitBreaker:
         """Per-instance circuit breaker for this inverter connection."""
         return self._circuit_breaker
+
+    @property
+    def socket_lock(self) -> asyncio.Lock:
+        """Per-instance lock serialising all socket access (read/write/reconnect)."""
+        return self._socket_lock
 
     async def get_client(self) -> ModbusTcpClient:
         """
@@ -109,8 +122,16 @@ class ModbusConnectionManager:
             self._reconnecting = True
             try:
                 await self._connection_cache.invalidate()
-                await self._close_socket()
-                await _connect_client_inplace(self._client, self._host, self._port)
+                # Hold the socket lock so no read/write is touching the socket
+                # while we close and re-open it. Lock order is always
+                # _connection_lock -> _socket_lock (reads take socket_lock alone
+                # after get_client() has released _connection_lock), so this
+                # nesting cannot deadlock.
+                async with self._socket_lock:
+                    await self._close_socket()
+                    await _connect_client_inplace(
+                        self._client, self._host, self._port
+                    )
                 await self._connection_cache.set_cached_client(self._client)
                 return True
             except Exception as e:
