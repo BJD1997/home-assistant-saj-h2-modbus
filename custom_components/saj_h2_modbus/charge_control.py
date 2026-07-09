@@ -411,37 +411,10 @@ class ChargeSettingHandler:
                 label,
             )
 
-        # Handle time_enable for slots 1-7 (index 0-6)
-        if index >= 0:
-            await self._ensure_slot_enabled(mode_type, index, label)
-
-    async def _ensure_slot_enabled(
-        self, mode_type: str, index: int, label: str
-    ) -> None:
-        """Ensures the time_enable bit is set for the given slot."""
-        enable_def = MODBUS_ADDRESSES["time_enables"][mode_type]
-
-        addr = enable_def["address"]
-
-        def modifier(cur: int) -> int:
-            return cur | (1 << index)
-
-        success, new_mask = await self.hub.merge_write_register(
-            addr, modifier, f"{label} time_enable"
-        )
-        if success:
-            # Update cache
-            key = (
-                "charge_time_enable"
-                if mode_type == "charge"
-                else "discharge_time_enable"
-            )
-            await self._update_cache({key: new_mask})
-            # Sync AppMode: enabling any slot requires AppMode=1 (Force Charge/Discharge)
-            chg, dchg = self._get_power_states()
-            await self._update_app_mode_from_states(
-                charge_enabled=chg, discharge_enabled=dchg
-            )
+        # NOTE: Editing a slot's time/day-mask/power does NOT auto-enable it.
+        # The time_enable bitmask (0x3604/0x3605) is owned by the user via the
+        # dedicated *_time_enable entity, so a slot the user intentionally
+        # disabled stays disabled when its values are edited.
 
     async def _handle_power_state(self, state_type: str, value: bool) -> None:
         """Handles charging or discharging state changes generically."""
