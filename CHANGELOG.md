@@ -27,6 +27,7 @@
 
 ### Fixes & Code Quality
 - **Modernized Type Annotations**: `modbus_readers.py` now uses `from __future__ import annotations` and builtin `dict`/`list` generics instead of `typing.Dict`/`typing.List`, aligning it with the rest of the integration (no behavior change).
+- **Future Annotations in `switch.py`**: Added the missing `from __future__ import annotations` import to `switch.py` for consistency with the rest of the integration (no behavior change).
 - **HA-Native Flush Scheduling**: The debounced UI state flush in `charge_control.py` now uses Home Assistant's `async_call_later` helper instead of the raw `hass.loop.call_later`/`call_soon` timers, so the scheduled callback is properly tracked and cancelled by HA's event system.
 - **Module-Level `random` Import**: Moved the `random` import in `charge_control.py` out of the write-retry loop to module scope (minor cleanup, no behavior change).
 - **Correct Fast-Update Debug Log**: The fast-poll debug log (`Fast update for … : old -> new`) printed the new value on both sides because the cached value was overwritten before logging. It now captures the previous value first and shows the real transition.
