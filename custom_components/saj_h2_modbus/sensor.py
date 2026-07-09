@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SENSOR_TYPES, SajModbusSensorEntityDescription
+from .const import SENSOR_TYPES, SajModbusSensorEntityDescription
 from .hub import SAJModbusHub, FAST_POLL_SENSORS, ADVANCED_LOGGING
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,8 +19,8 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up SAJ sensors from a config entry."""
-    hub: SAJModbusHub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub: SAJModbusHub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
     for description in SENSOR_TYPES.values():

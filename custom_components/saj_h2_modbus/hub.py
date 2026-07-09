@@ -991,3 +991,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     return True, new_val
                 return False, current
+
+
+# Typed config entry: runtime_data carries the hub instance.
+type SAJConfigEntry = ConfigEntry[SAJModbusHub]

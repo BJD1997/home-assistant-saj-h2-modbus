@@ -9,7 +9,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.text import TextEntity
 
-from .const import DOMAIN
 from .utils import generate_slot_definitions
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,8 +22,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the writable time entities for Charge and Discharge."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
 

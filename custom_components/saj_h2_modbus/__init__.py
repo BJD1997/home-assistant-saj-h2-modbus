@@ -27,7 +27,7 @@ from homeassistant.helpers import config_validation as cv
 from .utils import get_config_value, get_config_values
 
 if TYPE_CHECKING:
-    from .hub import SAJModbusHub
+    from .hub import SAJModbusHub, SAJConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,21 +43,18 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the SAJ Modbus component."""
-    hass.data.setdefault(DOMAIN, {})
+    # Per-entry state lives in entry.runtime_data; no global hass.data needed.
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: SAJConfigEntry) -> bool:
     """Set up a SAJ Modbus entry."""
     _LOGGER.debug("Starting async_setup_entry")
     start_time = time.monotonic()
 
     hub = await _create_hub(hass, entry)
-
-    hass.data[DOMAIN][entry.entry_id] = {
-        "hub": hub,
-        "device_info": _create_device_info(entry),
-    }
+    hub.device_info = _create_device_info(entry)
+    entry.runtime_data = hub
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_update_options))
@@ -77,33 +74,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: SAJConfigEntry) -> bool:
     """Unload a config entry."""
     # Unload platforms first so entities can still access a fully functional
     # hub during their own teardown, then tear down the hub itself (stops
     # fast coordinator, closes client).
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    hub = hass.data[DOMAIN].get(entry.entry_id, {}).get("hub")
+    hub = getattr(entry, "runtime_data", None)
     if hub is not None:
         try:
             await hub.async_unload_entry()
         except Exception as e:
             _LOGGER.debug(f"Ignoring hub unload error: {e}")
 
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-    else:
+    if not unload_ok:
         _LOGGER.warning(
-            "Unload platforms failed for entry %s; Hub remains registered in hass.data",
+            "Unload platforms failed for entry %s; hub teardown still attempted",
             entry.entry_id,
         )
     return unload_ok
 
 
-async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_update_options(hass: HomeAssistant, entry: SAJConfigEntry) -> None:
     """Update options and restart fast updates if needed."""
-    hub: SAJModbusHub | None = hass.data[DOMAIN].get(entry.entry_id, {}).get("hub")
+    hub: SAJModbusHub | None = getattr(entry, "runtime_data", None)
     if hub is not None:
         config = get_config_values(entry, DEFAULT_CONFIG_SCHEMA)
         await hub.update_connection_settings(

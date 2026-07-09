@@ -8,7 +8,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .hub import SAJModbusHub
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,8 +47,8 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up SAJ switches."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
     for desc in SWITCH_DEFINITIONS:
