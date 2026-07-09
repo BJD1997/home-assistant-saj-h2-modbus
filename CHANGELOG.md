@@ -28,6 +28,7 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **Fast Coordinator Started After Platform Setup**: `start_fast_updates()` now runs after `async_forward_entry_setups` in `async_setup_entry`, so the fast/ultra-fast loop is only started once the entity platforms (and their fast listeners) are registered. Robustness hardening — the first tick was already ≥1 s in the future, so no behavior change in practice.
 - **Modernized Type Annotations**: `modbus_readers.py` now uses `from __future__ import annotations` and builtin `dict`/`list` generics instead of `typing.Dict`/`typing.List`, aligning it with the rest of the integration (no behavior change).
 - **Future Annotations in `switch.py`**: Added the missing `from __future__ import annotations` import to `switch.py` for consistency with the rest of the integration (no behavior change).
 - **HA-Native Flush Scheduling**: The debounced UI state flush in `charge_control.py` now uses Home Assistant's `async_call_later` helper instead of the raw `hass.loop.call_later`/`call_soon` timers, so the scheduled callback is properly tracked and cancelled by HA's event system.

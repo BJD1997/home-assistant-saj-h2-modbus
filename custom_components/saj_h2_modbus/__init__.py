@@ -59,15 +59,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "device_info": _create_device_info(entry),
     }
 
-    # Start fast updates only if enabled in hub
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
+
+    # Start fast updates only after the entity platforms are set up, so the
+    # first fast tick never fires before the fast listeners are registered.
     if hub.fast_enabled:
         await hub.start_fast_updates()
         _LOGGER.info("Fast coordinator started (10s interval)")
     else:
         _LOGGER.info("Fast coordinator not started (disabled).")
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     end_time = time.monotonic()
     elapsed_time = end_time - start_time
