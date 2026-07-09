@@ -38,6 +38,7 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **Dropped Deprecated `CONNECTION_CLASS`**: Removed the obsolete `CONNECTION_CLASS` attribute from the config flow; the connection class is already conveyed by `iot_class` in the manifest (no behavior change).
 - **Explicit `integration_type`**: The manifest now declares `"integration_type": "hub"` explicitly instead of relying on the default, as recommended by the Home Assistant integration spec (no behavior change).
 - **Fast Coordinator Started After Platform Setup**: `start_fast_updates()` now runs after `async_forward_entry_setups` in `async_setup_entry`, so the fast/ultra-fast loop is only started once the entity platforms (and their fast listeners) are registered. Robustness hardening — the first tick was already ≥1 s in the future, so no behavior change in practice.
 - **Modernized Type Annotations**: `modbus_readers.py` now uses `from __future__ import annotations` and builtin `dict`/`list` generics instead of `typing.Dict`/`typing.List`, aligning it with the rest of the integration (no behavior change).

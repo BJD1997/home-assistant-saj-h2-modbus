@@ -65,7 +65,6 @@ class SAJModbusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """SAJ Modbus configflow."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def _host_in_configuration_exists(self, host) -> bool:
         """Return True if host exists in configuration."""
