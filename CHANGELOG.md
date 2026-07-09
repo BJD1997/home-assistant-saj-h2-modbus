@@ -1,5 +1,11 @@
 ## v3.0.0
 
+> **Home Assistant 2026 readiness:** This release brings the integration in line with the current
+> Home Assistant integration requirements (2026) — optional MQTT via `after_dependencies`, explicit
+> `integration_type`, a modernized options flow, config-entry `runtime_data`, and the current
+> config-entry entity callbacks — without changing any entity IDs, so existing automations and
+> dashboards keep working.
+
 ### Added
 - **Inverter/Battery Setpoint Registers (0x4023-0x4030):** New reader `read_inverter_settings_data` exposes previously unread registers as sensors: `InvDisPowerSet`, `InvChgPowerSet`, `BatDisCurrSet`, `BatChgCurrSet`, `BatStatusDisp`, `BatProtocolSet`, `BatChgSocUpLimit`, `BatDisSocDowLimit`, `BatDODSet`, `BatResSoc`, and `MeterModeSet`. These closed a previously unread gap between `realtime_data` (ending at `0x4016`) and `additional_data_4` (starting at `0x4031`). `BatDisCurrSet` (`0x4025`) and `BatChgCurrSet` (`0x4026`) 
 
