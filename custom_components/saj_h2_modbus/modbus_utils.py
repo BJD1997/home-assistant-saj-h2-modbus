@@ -180,20 +180,6 @@ def get_modbus_circuit_breaker() -> ModbusCircuitBreaker:
     return _CIRCUIT_BREAKER_CTX.get() or _DEFAULT_CIRCUIT_BREAKER
 
 
-# Global lock that serializes all reconnect attempts across polling loops.
-# Fast-Loop and Slow-Loop share the same ModbusTcpClient; without this lock
-# both loops would try to reconnect the same broken socket simultaneously,
-# causing cascading "Connection refused" errors in the logs.
-_RECONNECT_LOCK: asyncio.Lock = asyncio.Lock()
-
-# Event that is SET when no reconnect is running, CLEARED while one is in progress.
-# Coroutines that detect "another task is already reconnecting" wait on this event
-# so they retry their read only AFTER the reconnect has completed (success or failure),
-# instead of immediately retrying on a still-broken socket.
-_RECONNECT_DONE: asyncio.Event = asyncio.Event()
-_RECONNECT_DONE.set()  # Initially set: no reconnect in progress
-
-
 # ============================================================================
 # CONNECTION MANAGEMENT
 # ============================================================================
@@ -436,7 +422,7 @@ async def _on_modbus_retry(
     port: int,
     logger: logging.Logger,
     operation_name: str,
-    _lock: Lock,  # kept for functools.partial compatibility; reconnect uses _RECONNECT_LOCK
+    lock: Lock,
     attempt: int,
     e: Exception,
 ) -> None:
@@ -449,7 +435,10 @@ async def _on_modbus_retry(
         port: The port to connect to
         logger: Logger instance
         operation_name: Name of the operation being retried
-        _lock: Unused; kept so functools.partial in _create_retry_handlers binds correctly
+        lock: Per-instance socket lock; held exclusively during close/reconnect
+            so no read/write touches the socket while it is torn down and
+            re-opened. This is the same lock all reads/writes serialise on, and
+            it is free here because the failed operation already released it.
         attempt: Current attempt number
         e: The exception that triggered the retry
     """
@@ -457,78 +446,46 @@ async def _on_modbus_retry(
     if isinstance(e, (ConnectionException, ConnectionError, OSError)):
         logger.info("Connection lost during %s, attempting reconnect", operation_name)
 
-        # Fast path: another coroutine is already inside _RECONNECT_LOCK doing the reconnect.
-        # Wait until that reconnect finishes (success or failure) before we retry our read,
-        # so we don't immediately hit a still-broken socket.
-        if _RECONNECT_LOCK.locked():
-            logger.debug(
-                "Reconnect for %s waiting for in-progress reconnect to finish",
-                operation_name,
-            )
-            try:
-                await asyncio.wait_for(_RECONNECT_DONE.wait(), timeout=10.0)
-                return
-            except asyncio.TimeoutError:
-                if client.connected:
-                    logger.warning(
-                        "Reconnect wait timed out for %s, but client is connected again – "
-                        "proceeding",
-                        operation_name,
-                    )
-                    return
-                logger.warning(
-                    "Reconnect wait timed out for %s and client is still disconnected; "
-                    "the in-progress reconnect appears stuck. Attempting our own reconnect "
-                    "instead of retrying against a known-broken socket.",
+        # Hold the per-instance socket lock for the whole close+reconnect. This
+        # both serialises concurrent reconnects (only one coroutine reconnects,
+        # the rest double-check `connected` and skip) and guarantees no other
+        # read/write is in flight on the socket while we close it.
+        async with lock:
+            # Double-checked: another coroutine may have already reconnected
+            # while we waited for the lock.
+            if client.connected:
+                logger.debug(
+                    "Reconnect for %s skipped – client already connected after lock",
                     operation_name,
                 )
-                # Fall through to the reconnect logic below instead of returning
-                # blindly. _RECONNECT_LOCK may still be held by the stuck task;
-                # acquiring it here will simply wait for it to be released, and
-                # the double-check inside then decides whether reconnecting is
-                # still necessary.
+                return
 
-        # Signal that a reconnect is starting so concurrent tasks wait.
-        _RECONNECT_DONE.clear()
-        try:
-            async with _RECONNECT_LOCK:
-                # Double-checked: another coroutine may have already reconnected while we waited.
-                if client.connected:
+            # Force close to ensure connected state is reset
+            try:
+                if hasattr(client, "socket") and client.socket:
+                    try:
+                        fileno = client.socket.fileno()
+                    except Exception:
+                        fileno = "unknown"
                     logger.debug(
-                        "Reconnect for %s skipped – client already connected after lock",
-                        operation_name,
+                        "Closing Modbus socket (fd=%s) due to %s", fileno, e
                     )
-                    return
+                client.close()
+            except Exception as close_err:
+                logger.debug("Exception during socket close: %s", close_err, exc_info=True)
 
-                # Force close to ensure connected state is reset
-                try:
-                    if hasattr(client, "socket") and client.socket:
-                        try:
-                            fileno = client.socket.fileno()
-                        except Exception:
-                            fileno = "unknown"
-                        logger.debug(
-                            "Closing Modbus socket (fd=%s) due to %s", fileno, e
-                        )
-                    client.close()
-                except Exception as close_err:
-                    logger.debug("Exception during socket close: %s", close_err, exc_info=True)
-
-                try:
-                    await _connect_client_inplace(client, host, port)
-                    logger.info("Reconnect during %s successful", operation_name)
-                except Exception as reconnect_error:
-                    logger.warning(
-                        "Reconnect during %s failed: %s – aborting retry loop.",
-                        operation_name,
-                        reconnect_error,
-                    )
-                    raise ReconnectionNeededError(
-                        f"Reconnect during {operation_name} failed: {reconnect_error}"
-                    ) from reconnect_error
-        finally:
-            # Always unblock waiting tasks, whether reconnect succeeded or failed.
-            _RECONNECT_DONE.set()
+            try:
+                await _connect_client_inplace(client, host, port)
+                logger.info("Reconnect during %s successful", operation_name)
+            except Exception as reconnect_error:
+                logger.warning(
+                    "Reconnect during %s failed: %s – aborting retry loop.",
+                    operation_name,
+                    reconnect_error,
+                )
+                raise ReconnectionNeededError(
+                    f"Reconnect during {operation_name} failed: {reconnect_error}"
+                ) from reconnect_error
 
 
 def _create_retry_handlers(
