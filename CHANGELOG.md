@@ -38,6 +38,7 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **`AddConfigEntryEntitiesCallback`**: All entity platforms now type their add-entities callback as `AddConfigEntryEntitiesCallback`, the current config-entry-aware variant (no behavior change).
 - **Config Entry `runtime_data`**: Per-entry state (the hub and its device info) is now stored in the typed `entry.runtime_data` instead of a manual `hass.data[DOMAIN][entry_id]` dictionary, following current Home Assistant conventions. No user-visible change; simplifies setup/unload and removes global bookkeeping.
 - **Modernized Options Flow**: The options flow no longer uses the deprecated `OptionsFlowWithConfigEntry` base class and no longer receives the config entry via its constructor; it uses the `self.config_entry` property provided by Home Assistant (no behavior change).
 - **Dropped Deprecated `CONNECTION_CLASS`**: Removed the obsolete `CONNECTION_CLASS` attribute from the config flow; the connection class is already conveyed by `iot_class` in the manifest (no behavior change).
