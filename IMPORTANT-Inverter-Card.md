@@ -1,5 +1,7 @@
 ## ⚠️ Important Notice – New InverterCard Version
 
+YOu find the Version here:
+https://github.com/stanus74/home-assistant-saj-h2-modbus/blob/main/www/saj-h2-inverter-card.js
 
 To avoid inconsistent system states caused by using the **InverterCard simultaneously in a browser and the Home Assistant smartphone app**, the card has been reworked.
 
