@@ -6,24 +6,36 @@
 > config-entry entity callbacks — without changing any entity IDs, so existing automations and
 > dashboards keep working.
 
-### Added
+### Added New Sensors
+
 - **Inverter/Battery Setpoint Registers (0x4023-0x4030):** New reader `read_inverter_settings_data` exposes previously unread registers as sensors: `InvDisPowerSet`, `InvChgPowerSet`, `BatDisCurrSet`, `BatChgCurrSet`, `BatStatusDisp`, `BatProtocolSet`, `BatChgSocUpLimit`, `BatDisSocDowLimit`, `BatDODSet`, `BatResSoc`, and `MeterModeSet`. These closed a previously unread gap between `realtime_data` (ending at `0x4016`) and `additional_data_4` (starting at `0x4031`). `BatDisCurrSet` (`0x4025`) and `BatChgCurrSet` (`0x4026`) 
 
 ### Added
 - **Daily Exclusion-List Auto-Reset:** Unsupported register block exclusions now reset automatically every 24 hours. This allows firmware updates (e.g. overnight) to take effect without requiring an HA restart, and prevents permanent blocking of registers that may be added in future updates.
 
 ### Improved
+
 - **Register Block Exclusion Resilience:** The permanent exclusion mechanism for unsupported register blocks (e.g. `additional_data_3_2` on certain H1/H2 hardware) is now more resilient to firmware updates and temporary network issues. Blocks are re-tested daily instead of remaining excluded until HA restarts.
 
 
 ### Fixed
+
 - **MQTT Is Now an Optional Dependency:** `mqtt` was declared as a hard `dependencies` entry in the manifest, which forced Home Assistant's MQTT integration to be set up before this integration could load — even though MQTT here is entirely optional (internal Paho client, HA MQTT, or none). It is now an `after_dependencies` entry, so the integration loads without HA MQTT configured and still switches to the HA MQTT strategy automatically once that integration loads later.
-- **Inverter Card: Opening a Slot No Longer Activates It (v1.3.0):** In the Lovelace card, expanding a charge/discharge slot to edit it is now separate from activating it. Clicking the slot header only expands/collapses the editor (no register write); the checkbox is a dedicated per-slot activation that writes the time-enable bit. Previously slots 2-7 wrote the enable bitmask the moment they were opened, a slot counted as "enabled" as soon as any of its time/power fields had a pending write, and activating another slot could clobber (deactivate) a just-activated slot because the new mask was based on the lagging sensor value. The enable state now reflects only the hardware bitmask (optimistically the pending activation write), and activation reads the last written mask to avoid lost updates.
-- **MQTT Strategy No Longer Gets Stuck After a Config Change:** The MQTT publisher's `stop()` used to detach its component-loaded listener, but it was also called on every strategy/config switch in `update_config`, not just on unload. Once detached, the publisher could no longer notice HA's MQTT integration loading later, so the strategy stayed stuck on `NONE`/`PAHO` until the integration was reloaded. Client shutdown and listener teardown are now split (`stop_paho()` vs. `stop()`); config switches only stop the Paho client and keep the listener alive, so switching to HA MQTT after a later load works again.
+
+- **Inverter Card: Opening a Slot No Longer Activates It (v1.3.0):**
+In the Lovelace card, expanding a charge/discharge slot to edit it is now separate from activating it. Clicking the slot header only expands/collapses the editor (no register write); the checkbox is a dedicated per-slot activation that writes the time-enable bit. Previously slots 2-7 wrote the enable bitmask the moment they were opened, a slot counted as "enabled" as soon as any of its time/power fields had a pending write, and activating another slot could clobber (deactivate) a just-activated slot because the new mask was based on the lagging sensor value. The enable state now reflects only the hardware bitmask (optimistically the pending activation write), and activation reads the last written mask to avoid lost updates.
+
+- **MQTT Strategy No Longer Gets Stuck After a Config Change:**
+The MQTT publisher's `stop()` used to detach its component-loaded listener, but it was also called on every strategy/config switch in `update_config`, not just on unload. Once detached, the publisher could no longer notice HA's MQTT integration loading later, so the strategy stayed stuck on `NONE`/`PAHO` until the integration was reloaded. Client shutdown and listener teardown are now split (`stop_paho()` vs. `stop()`); config switches only stop the Paho client and keep the listener alive, so switching to HA MQTT after a later load works again.
+
 - **Editing a Charge/Discharge Slot No Longer Re-Enables It:** Previously, changing any field of a time slot (start/end time, day mask or power percent) unconditionally set that slot's bit in the `charge_time_enable`/`discharge_time_enable` bitmask. A slot the user had intentionally disabled reappeared as active whenever its values were adjusted. Slot edits now leave the enable bitmask untouched; enabling/disabling a slot is done solely through the dedicated time-enable entity.
+
 - **Fast-Poll Sensors Ignored Disabled-by-Default Setting:** The fast variant of a fast-poll sensor forced `entity_registry_enabled_default = True`, so sensors that are disabled by default (or that the user intentionally disabled in their base description) reappeared as an enabled "Fast …" entity. Fast variants now inherit the base sensor's enabled-default.
+
 - **Passive Battery Block Never Excluded on Unsupported Firmware:** `read_passive_battery_data` (register block `0x3636`) swallowed the internal `BlockUnsupportedError`, so on devices that do not serve this block the hub retried it every 60 s poll cycle and logged repeated errors indefinitely. The error is now propagated so the block is permanently excluded after 3 consecutive rejections (with daily re-test), consistent with all other register blocks.
-- **Circuit Breaker Stuck in HALF_OPEN:** Fixed a bug where the Modbus circuit breaker could remain permanently in the HALF_OPEN state if a recovery probe reached the device but raised a non-connection error (e.g. an unsupported register or IO error). In that case every subsequent Modbus call was rejected with "Circuit Breaker is HALF_OPEN (probe in progress)" until the integration was reloaded. The breaker now correctly closes when the probe proves the connection is healthy, letting the non-connection error propagate normally.
+
+- **Circuit Breaker Stuck in HALF_OPEN:**
+Fixed a bug where the Modbus circuit breaker could remain permanently in the HALF_OPEN state if a recovery probe reached the device but raised a non-connection error (e.g. an unsupported register or IO error). In that case every subsequent Modbus call was rejected with "Circuit Breaker is HALF_OPEN (probe in progress)" until the integration was reloaded. The breaker now correctly closes when the probe proves the connection is healthy, letting the non-connection error propagate normally.
 
 ---
 
