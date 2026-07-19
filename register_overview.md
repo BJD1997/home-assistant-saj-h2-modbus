@@ -344,6 +344,29 @@ Note: Some registers (e.g. schedule registers with day mask + percentage value, 
 | `A04DH` | `sensor.saj_meter_a_power_factor_3` | R | SAJ Meter A Power Factor 3 |
 | `A04EH` | `sensor.saj_meter_a_frequency_3` | R | SAJ Meter A Frequency 3 |
 
+### Inverter status codes (`4004H`)
+
+Register `4004H` provides two sensors: `sensor.saj_inverter_working_mode` returns
+the raw numeric mode (`mpvmode`), and `sensor.saj_inverter_status` returns the
+decoded text below (`mpvmode` → text via `DEVICE_STATUSSES` in `const.py`;
+decoded in `modbus_readers.py`). Unknown values are shown as `Unknown`.
+
+This is also the sensor that distinguishes **on-grid vs off-grid** operation:
+value **3** = off-grid, value **4** = on-grid.
+
+| Value | `sensor.saj_inverter_status` text |
+|---|---|
+| 0 | Initialization |
+| 1 | Waiting |
+| 2 | Running |
+| 3 | Offnet mode, used for energy storage *(off-grid)* |
+| 4 | Grid on-load mode, used for energy storage *(on-grid)* |
+| 5 | Fault |
+| 6 | Update |
+| 7 | Test |
+| 8 | Self-checking |
+| 9 | Reset |
+
 ## Writable input entities (`number.*`)
 
 These registers are written via `number` entities (see `number.py` / `charge_control.py`). They are read/write (`R/W`).
