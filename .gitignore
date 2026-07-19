@@ -2,5 +2,7 @@
 /wiki-en/
 /logs
 .agents*
+.kilo
+.claude
 
 
