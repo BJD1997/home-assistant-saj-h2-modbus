@@ -35,6 +35,7 @@ from .modbus_utils import (
 from .charge_control import (
     ChargeSettingHandler,
     PENDING_FIELDS,
+    RMW_REGISTER_ADDRESSES,
 )
 from .services import ModbusConnectionManager, MqttPublisher
 from .utils import get_config_values, create_logged_task
@@ -119,6 +120,7 @@ _READER_GROUPS = [
         modbus_readers.read_side_net_data,
         modbus_readers.read_passive_battery_data,
         modbus_readers.read_meter_a_data,
+        modbus_readers.read_inverter_settings_data,
     ],
     [modbus_readers.read_charge_data, modbus_readers.read_discharge_data],
 ]
@@ -188,10 +190,13 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
     def _init_locks(self) -> None:
         """Initialise all asyncio locks and synchronisation primitives."""
-        # PERFORMANCE OPTIMIZATION: Separate locks for different polling intervals
-        # to reduce contention between ultra-fast (1s), fast (10s) and slow (60s) loops.
-        # Single lock for all reads because reader groups execute sequentially
-        self._read_lock = asyncio.Lock()
+        # SINGLE socket lock for ALL Modbus socket access (reads, writes and
+        # reconnect). pymodbus' AsyncModbusTcpClient cannot serve concurrent
+        # operations on the same TCP connection, so reads and writes must not
+        # run in parallel. The lock lives on the connection manager (with the
+        # client) so the reconnect path can hold the very same lock; _read_lock
+        # and _write_lock are kept as aliases to minimise call-site churn.
+        self._read_lock = self.connection.socket_lock
 
         # Merge locks for shared state/mask registers
         self._merge_locks: dict[int, asyncio.Lock] = {
@@ -206,10 +211,14 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self._rmw_lock_ttl: float = 3600.0  # 1 hour TTL
         self._rmw_dict_lock = asyncio.Lock()
 
-        # DEDICATED WRITE LOCK: Write operations have priority over read operations.
-        self._write_lock = asyncio.Lock()
+        # Writes share the same socket lock as reads (see above). Writer
+        # priority is preserved via the _write_done event: reads wait on it
+        # before acquiring the socket lock, and ultra-fast ticks skip entirely
+        # while a write is pending.
+        self._write_lock = self.connection.socket_lock
         self._write_done = asyncio.Event()
         self._write_done.set()
+        self._pending_writes = 0
         self._ultra_fast_pending = False
 
         self.inverter_data: dict[str, Any] = {}
@@ -234,8 +243,11 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         # Block-exclusion tracking: counts consecutive unsupported responses per
         # reader function; once the threshold is reached the function is added to
         # _permanently_failed_blocks and skipped for the rest of the session.
+        # Daily reset (see _async_cleanup_cache) allows firmware updates to take
+        # effect without requiring an HA restart.
         self._block_failure_counts: dict[str, int] = {}
         self._permanently_failed_blocks: set = set()
+        self._last_exclusion_reset_time: float = time.monotonic()
 
     def _init_charge_control(self, use_ha_mqtt: bool) -> None:
         """Initialise charge/discharge control handler, setters and cache cleanup timer."""
@@ -659,7 +671,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
         self.updating_settings = True
         try:
             # Update Services
-            self.connection.update_config(host, port)
+            await self.connection.update_config(host, port)
 
             # Restart cache-cleanup timer so it fires relative to the new config change,
             # not from whenever the integration was first set up.
@@ -680,7 +692,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
             # Update MQTT: pass explicit values from args (or recovered value)
-            self.mqtt.update_config(
+            await self.mqtt.update_config(
                 mqtt_host,
                 mqtt_port,
                 mqtt_user,
@@ -767,7 +779,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
             finally:
                 self._cache_cleanup_unsub = None
         try:
-            self.mqtt.stop()
+            await self.mqtt.stop()
         except Exception as e:
             _LOGGER.debug("Error during MQTT stop: %s", e)
         try:
@@ -805,9 +817,27 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
     async def _async_cleanup_cache(self, now=None) -> None:
-        """Periodically clean up stale connection cache entries."""
+        """Periodically clean up stale connection cache entries and reset daily exclusions."""
         await self.connection.cleanup_cache()
         await self._cleanup_rmw_locks()
+
+        # Reset exclusion-liste every 24 hours to allow firmware updates to take effect
+        # without requiring an HA restart. If a block is still unsupported, it will
+        # be re-excluded after failing again.
+        now_time = time.monotonic()
+        if now_time - self._last_exclusion_reset_time > 86400:  # 24 hours in seconds
+            if self._permanently_failed_blocks:
+                excluded_count = len(self._permanently_failed_blocks)
+                excluded_names = ", ".join(m.__name__ for m in self._permanently_failed_blocks)
+                _LOGGER.info(
+                    "Daily exclusion-list reset: re-enabling %d previously failed register blocks "
+                    "(%s). These will be retested and re-excluded if unsupported.",
+                    excluded_count,
+                    excluded_names,
+                )
+                self._permanently_failed_blocks.clear()
+                self._block_failure_counts.clear()
+            self._last_exclusion_reset_time = now_time
 
     @asynccontextmanager
     async def _lock_order_guard(self, name: str):
@@ -838,13 +868,19 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
         Uses dedicated write lock with priority over read operations.
         """
-        if not allow_merge_locked and address in self._merge_locks:
+        if not allow_merge_locked and (
+            address in self._merge_locks or address in RMW_REGISTER_ADDRESSES
+        ):
             raise ValueError(
-                f"Direct write to merge-locked register 0x{address:04x} is not allowed; use merge_write_register()."
+                f"Direct write to read-modify-write register 0x{address:04x} is not allowed; use merge_write_register()."
             )
 
-        # Atomar: write_done löschen + ultra_fast_pending setzen
+        # Track pending writes with a counter so _write_done is only set once
+        # ALL concurrently in-flight writes have completed (a plain clear/set
+        # pair would let a second write's completion prematurely mark
+        # _write_done while an earlier write is still in flight).
         async with self._write_lock:
+            self._pending_writes += 1
             self._write_done.clear()
             self._ultra_fast_pending = True
 
@@ -855,12 +891,35 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     client, self._write_lock, 1, address, value
                 )
         finally:
-            self._write_done.set()
+            async with self._write_lock:
+                self._pending_writes = max(0, self._pending_writes - 1)
+                if self._pending_writes == 0:
+                    self._write_done.set()
             if self.ultra_fast_enabled and self._ultra_fast_pending:
                 self._ultra_fast_pending = False
                 create_logged_task(
                     self.hass, self._async_update_fast(ultra=True), logger=_LOGGER
                 )
+
+    async def _wait_for_write_done(self) -> None:
+        """
+        Wait for any pending write operation to finish – bounded to prevent
+        infinite hang if _write_done is accidentally never set (defensive timeout).
+        """
+        try:
+            await asyncio.wait_for(self._write_done.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "_wait_for_write_done: _write_done not set after 15 s – "
+                "write operation appears stuck. Resetting write state to prevent deadlock."
+            )
+            async with self._write_lock:
+                self._pending_writes = 0
+                self._write_done.set()
+            raise RuntimeError(
+                "_wait_for_write_done: _write_done not set after 15 s – "
+                "write operation appears stuck"
+            )
 
     async def _read_registers(self, address: int, count: int) -> list[int]:
         """
@@ -868,20 +927,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
 
         Waits for any pending write operation before reading.
         """
-        # Wait for any pending write operation – bounded to prevent infinite hang
-        # if _write_done is accidentally never set (defensive timeout).
-        try:
-            await asyncio.wait_for(self._write_done.wait(), timeout=15.0)
-        except asyncio.TimeoutError:
-            _LOGGER.error(
-                "_read_registers: _write_done not set after 15 s – "
-                "write operation appears stuck. Resetting write state to prevent deadlock."
-            )
-            self._write_done.set()
-            raise RuntimeError(
-                "_read_registers: _write_done not set after 15 s – "
-                "write operation appears stuck"
-            )
+        await self._wait_for_write_done()
 
         async with self._lock_order_guard("slow"):
             client = await self.connection.get_client()
@@ -922,6 +968,12 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     self._rmw_locks.move_to_end(address)
                     self._rmw_locks_last_access[address] = time.monotonic()
                 lock = self._rmw_locks[address]
+
+            # Wait for any in-flight write to finish BEFORE acquiring the
+            # per-address RMW lock, so the lock isn't held for up to 15s
+            # while merely waiting on an unrelated pending write.
+            await self._wait_for_write_done()
+
             async with lock:
                 current_regs = await self._read_registers(address, 1)
                 if not current_regs:
@@ -939,3 +991,7 @@ class SAJModbusHub(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     return True, new_val
                 return False, current
+
+
+# Typed config entry: runtime_data carries the hub instance.
+type SAJConfigEntry = ConfigEntry[SAJModbusHub]

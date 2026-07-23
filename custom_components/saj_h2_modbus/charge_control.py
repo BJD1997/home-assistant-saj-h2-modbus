@@ -3,11 +3,15 @@
 from __future__ import annotations
 import asyncio
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
+
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_call_later
 
 if TYPE_CHECKING:
     from .hub import SAJModbusHub
@@ -177,6 +181,18 @@ MODBUS_ADDRESSES = {
 }
 
 
+# Packed slot registers (day_mask in the high byte, power_percent in the low
+# byte) must only be modified via read-modify-write (merge_write_register),
+# never through a direct _write_register call — a direct write would clobber
+# the other field. The state/mask registers 0x3604/0x3605 are covered
+# separately by hub._merge_locks.
+RMW_REGISTER_ADDRESSES: frozenset[int] = frozenset(
+    slot["day_mask_power"]
+    for mode_slots in MODBUS_ADDRESSES["slots"].values()
+    for slot in mode_slots
+)
+
+
 class CommandType(Enum):
     CHARGE_SLOT = "charge_slot"
     DISCHARGE_SLOT = "discharge_slot"
@@ -209,6 +225,7 @@ class ChargeSettingHandler:
         # Debounce for HA state flushes
         self._flush_pending: bool = False
         self._last_flush_time: float = 0.0
+        self._flush_handle: Callable[[], None] | None = None
         # Locks removed
         # Cache removed
 
@@ -276,7 +293,8 @@ class ChargeSettingHandler:
         except asyncio.CancelledError:
             _LOGGER.debug("Command queue processing cancelled")
         finally:
-            self._is_processing = False
+            async with self._processing_lock:
+                self._is_processing = False
 
     async def _execute_command(self, command: Command) -> None:
         """Executes a single command based on its type."""
@@ -289,6 +307,15 @@ class ChargeSettingHandler:
     async def shutdown(self) -> None:
         """Stop queue processing and drain pending commands."""
         self._stop_processing = True
+
+        # Cancel any pending debounced flush so it can't fire after teardown
+        # and call async_set_updated_data on an already-unloaded coordinator.
+        # async_call_later returns a cancel callback, not a TimerHandle.
+        if self._flush_handle is not None:
+            self._flush_handle()
+            self._flush_handle = None
+        self._flush_pending = False
+
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             try:
@@ -407,37 +434,10 @@ class ChargeSettingHandler:
                 label,
             )
 
-        # Handle time_enable for slots 1-7 (index 0-6)
-        if index >= 0:
-            await self._ensure_slot_enabled(mode_type, index, label)
-
-    async def _ensure_slot_enabled(
-        self, mode_type: str, index: int, label: str
-    ) -> None:
-        """Ensures the time_enable bit is set for the given slot."""
-        enable_def = MODBUS_ADDRESSES["time_enables"][mode_type]
-
-        addr = enable_def["address"]
-
-        def modifier(cur: int) -> int:
-            return cur | (1 << index)
-
-        success, new_mask = await self.hub.merge_write_register(
-            addr, modifier, f"{label} time_enable"
-        )
-        if success:
-            # Update cache
-            key = (
-                "charge_time_enable"
-                if mode_type == "charge"
-                else "discharge_time_enable"
-            )
-            await self._update_cache({key: new_mask})
-            # Sync AppMode: enabling any slot requires AppMode=1 (Force Charge/Discharge)
-            chg, dchg = self._get_power_states()
-            await self._update_app_mode_from_states(
-                charge_enabled=chg, discharge_enabled=dchg
-            )
+        # NOTE: Editing a slot's time/day-mask/power does NOT auto-enable it.
+        # The time_enable bitmask (0x3604/0x3605) is owned by the user via the
+        # dedicated *_time_enable entity, so a slot the user intentionally
+        # disabled stays disabled when its values are edited.
 
     async def _handle_power_state(self, state_type: str, value: bool) -> None:
         """Handles charging or discharging state changes generically."""
@@ -614,13 +614,14 @@ class ChargeSettingHandler:
         else:
             delay = max(_FLUSH_MIN_INTERVAL, _SUBSEQUENT_FLUSH_DELAY - (time.monotonic() - self._last_flush_time))
             
-        if delay <= 0.0:
-            self.hub.hass.loop.call_soon(self._do_flush)
-        else:
-            self.hub.hass.loop.call_later(delay, self._do_flush)
+        self._flush_handle = async_call_later(
+            self.hub.hass, max(0.0, delay), self._do_flush
+        )
 
-    def _do_flush(self) -> None:
+    @callback
+    def _do_flush(self, now=None) -> None:
         """Perform the actual state flush and reset the debounce guard."""
+        self._flush_handle = None
         self._flush_pending = False
         self._last_flush_time = time.monotonic()
         self.hub.async_set_updated_data(self.hub.inverter_data)
@@ -718,6 +719,7 @@ class ChargeSettingHandler:
         self, address: int, value: int, label: str = "register"
     ) -> bool:
         """Write register with exponential backoff retry."""
+        last_error: Exception | None = None
         for attempt in range(1, MAX_HANDLER_RETRIES + 1):
             try:
                 ok = await self.hub._write_register(address, int(value))
@@ -726,10 +728,14 @@ class ChargeSettingHandler:
                         "Successfully wrote %s=%s to 0x%04x", label, value, address
                     )
                     return True
+                last_error = None
             except ValueError as err:
+                # Deterministic rejection (e.g. merge-locked register) – retrying
+                # won't help, so abort immediately instead of burning attempts.
                 _LOGGER.error("Write aborted for %s: %s", label, err)
-                break
+                return False
             except Exception as e:
+                last_error = e
                 _LOGGER.error(
                     "Error writing %s (attempt %d/%d): %s",
                     label,
@@ -739,9 +745,25 @@ class ChargeSettingHandler:
                 )
 
             if attempt < MAX_HANDLER_RETRIES:
-                import random
                 delay = min(2.0, 2 ** (attempt - 1)) + random.uniform(0.1, 0.5)
                 await asyncio.sleep(delay)
+
+        if last_error is not None:
+            _LOGGER.error(
+                "Giving up writing %s to 0x%04x after %d attempts; last error: %s",
+                label,
+                address,
+                MAX_HANDLER_RETRIES,
+                last_error,
+                exc_info=last_error,
+            )
+        else:
+            _LOGGER.error(
+                "Giving up writing %s to 0x%04x after %d attempts; device rejected the write",
+                label,
+                address,
+                MAX_HANDLER_RETRIES,
+            )
         return False
 
     async def _update_day_mask_and_power(

@@ -7,8 +7,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .const import DOMAIN
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .utils import generate_slot_definitions
 
 if TYPE_CHECKING:
@@ -321,11 +320,11 @@ class SajGenericNumberEntity(SajNumberEntity):
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     """Set up SAJ number entities."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
 

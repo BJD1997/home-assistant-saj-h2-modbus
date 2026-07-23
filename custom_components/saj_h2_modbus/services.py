@@ -42,6 +42,14 @@ class ModbusConnectionManager:
         self._connection_lock = asyncio.Lock()
         self._reconnecting = False
 
+        # Single socket lock guarding ALL access to the one client socket:
+        # reads, writes and reconnect. Because pymodbus' AsyncModbusTcpClient
+        # cannot handle concurrent operations on the same TCP connection, every
+        # read/write serialises on this lock, and reconnect holds it exclusively
+        # so the socket is never closed under an in-flight operation.
+        # Lives here (with the client) so both reconnect paths can hold it.
+        self._socket_lock = asyncio.Lock()
+
         # ONE client object, created once and reused for the entire lifetime.
         # Reconnect = close() + connect() on this same object – never replaced.
         # This guarantees that all polling loops always reference the same socket.
@@ -72,6 +80,11 @@ class ModbusConnectionManager:
     def circuit_breaker(self) -> ModbusCircuitBreaker:
         """Per-instance circuit breaker for this inverter connection."""
         return self._circuit_breaker
+
+    @property
+    def socket_lock(self) -> asyncio.Lock:
+        """Per-instance lock serialising all socket access (read/write/reconnect)."""
+        return self._socket_lock
 
     async def get_client(self) -> ModbusTcpClient:
         """
@@ -109,8 +122,16 @@ class ModbusConnectionManager:
             self._reconnecting = True
             try:
                 await self._connection_cache.invalidate()
-                await self._close_socket()
-                await _connect_client_inplace(self._client, self._host, self._port)
+                # Hold the socket lock so no read/write is touching the socket
+                # while we close and re-open it. Lock order is always
+                # _connection_lock -> _socket_lock (reads take socket_lock alone
+                # after get_client() has released _connection_lock), so this
+                # nesting cannot deadlock.
+                async with self._socket_lock:
+                    await self._close_socket()
+                    await _connect_client_inplace(
+                        self._client, self._host, self._port
+                    )
                 await self._connection_cache.set_cached_client(self._client)
                 return True
             except Exception as e:
@@ -149,28 +170,33 @@ class ModbusConnectionManager:
                 await self._close_socket()
                 _LOGGER.debug("Modbus socket closed after cache cleanup")
 
-    def update_config(self, host: str, port: int):
+    async def update_config(self, host: str, port: int) -> None:
         """
         Updates connection parameters.
 
-        PERFORMANCE OPTIMIZATION: Invalidates cache when config changes to
-        ensure new connection settings are used.
+        Closes the existing socket BEFORE switching to the new host/port and
+        does so while holding _connection_lock, so a concurrent get_client()
+        can never observe a still-open socket to the old host paired with
+        _saj_host/_saj_port already pointing at the new one.
         """
-        if host != self._host or port != self._port:
-            _LOGGER.info(
-                "Updating Modbus config: %s:%s -> %s:%s",
-                self._host,
-                self._port,
-                host,
-                port,
-            )
+        if host == self._host and port == self._port:
+            return
+
+        _LOGGER.info(
+            "Updating Modbus config: %s:%s -> %s:%s",
+            self._host,
+            self._port,
+            host,
+            port,
+        )
+        async with self._connection_lock:
+            await self._connection_cache.invalidate()
+            await self._close_socket()
+
             self._host = host
             self._port = port
             self._client._saj_host = host
             self._client._saj_port = port
-
-            # Close active client so the next call re-connects with new settings.
-            create_logged_task(self.hass, self.close(), logger=_LOGGER)
 
 
 class MqttCircuitBreaker(CircuitBreaker):
@@ -231,6 +257,8 @@ class MqttPublisher:
         # Publish rate-limiting tracking
         self._publish_timestamps: dict[str, float] = {}
         self._min_publish_interval: float = 2.0  # Min 2s between repeats
+        self._publish_timestamps_ttl: float = 3600.0  # Prune entries idle > 1h
+        self._last_publish_timestamps_cleanup: float = 0.0
 
         # Log throttling
         self._last_no_connection_log = 0.0
@@ -397,7 +425,7 @@ class MqttPublisher:
             prev_strategy = self.strategy
             self._determine_strategy(force=True)
             if self.strategy != prev_strategy:
-                self.stop()
+                await self.stop_paho()
             return
 
         try:
@@ -448,7 +476,7 @@ class MqttPublisher:
         if rc != 0:
             _LOGGER.warning("Paho MQTT: Disconnected unexpectedly (rc=%s)", rc)
 
-    def update_config(
+    async def update_config(
         self,
         host,
         port,
@@ -502,14 +530,14 @@ class MqttPublisher:
         # Handle Strategy Switch or Config Change
         if self.strategy == self.STRATEGY_PAHO:
             if connection_changed or strategy_changed or not self._paho_client:
-                self.stop()
+                await self.stop_paho()
                 create_logged_task(
                     self.hass, self._async_init_paho_client(), logger=_LOGGER
                 )
         else:
             # If we switched away from Paho, stop it
             if prev_strategy == self.STRATEGY_PAHO:
-                self.stop()
+                await self.stop_paho()
 
     async def publish_data(self, data: dict[str, Any], force: bool = False) -> None:
         """Publishes dictionary data to MQTT based on selected strategy."""
@@ -518,6 +546,19 @@ class MqttPublisher:
 
         messages = []
         now = time.monotonic()
+
+        # Opportunistically prune stale entries so the dict doesn't grow
+        # unbounded if sensor keys change over the integration's lifetime.
+        if now - self._last_publish_timestamps_cleanup > self._publish_timestamps_ttl:
+            self._last_publish_timestamps_cleanup = now
+            stale_keys = [
+                key
+                for key, ts in self._publish_timestamps.items()
+                if now - ts > self._publish_timestamps_ttl
+            ]
+            for key in stale_keys:
+                del self._publish_timestamps[key]
+
         for key, value in data.items():
             safe_key = key.split("/")[-1] if "/" in key else key
 
@@ -603,13 +644,28 @@ class MqttPublisher:
             _LOGGER.debug("HA MQTT component loaded – re-evaluating MQTT strategy")
             self._determine_strategy(force=True)
 
-    def stop(self):
-        """Stops the internal Paho client and cleans up event subscriptions."""
+    async def stop_paho(self):
+        """Stops only the internal Paho client (keeps event subscriptions).
+
+        Used on strategy/config switches, where the component-loaded listener
+        must survive so a later HA MQTT load can still re-evaluate the strategy.
+        """
+        if self._paho_client and self._paho_started:
+            _LOGGER.info("Paho MQTT: Stopping client")
+            self._paho_started = False
+            client = self._paho_client
+            # loop_stop() joins the Paho network thread and can block briefly;
+            # run both calls in the executor so the event loop isn't blocked.
+            await self.hass.async_add_executor_job(client.loop_stop)
+            await self.hass.async_add_executor_job(client.disconnect)
+
+    async def stop(self):
+        """Full teardown: stops the Paho client and cleans up subscriptions.
+
+        Only call this on final unload – it detaches the component-loaded
+        listener permanently.
+        """
         if self._unsub_component_loaded:
             self._unsub_component_loaded()
             self._unsub_component_loaded = None
-        if self._paho_client and self._paho_started:
-            _LOGGER.info("Paho MQTT: Stopping client")
-            self._paho_client.loop_stop()
-            self._paho_client.disconnect()
-            self._paho_started = False
+        await self.stop_paho()

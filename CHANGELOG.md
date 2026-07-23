@@ -1,10 +1,53 @@
-## v2.9.1
+## v3.0.0
+
+> **Home Assistant 2026 readiness:** This release brings the integration in line with the current
+> Home Assistant integration requirements (2026) — optional MQTT via `after_dependencies`, explicit
+> `integration_type`, a modernized options flow, config-entry `runtime_data`, and the current
+> config-entry entity callbacks — without changing any entity IDs, so existing automations and
+> dashboards keep working.
+
+### Added New Sensors
+
+- **Inverter/Battery Setpoint Registers (0x4023-0x4030):** New reader `read_inverter_settings_data` exposes previously unread registers as sensors: `InvDisPowerSet`, `InvChgPowerSet`, `BatDisCurrSet`, `BatChgCurrSet`, `BatStatusDisp`, `BatProtocolSet`, `BatChgSocUpLimit`, `BatDisSocDowLimit`, `BatDODSet`, `BatResSoc`, and `MeterModeSet`. These closed a previously unread gap between `realtime_data` (ending at `0x4016`) and `additional_data_4` (starting at `0x4031`). `BatDisCurrSet` (`0x4025`) and `BatChgCurrSet` (`0x4026`) 
+
+### Added
+- **Daily Exclusion-List Auto-Reset:** Unsupported register block exclusions now reset automatically every 24 hours. This allows firmware updates (e.g. overnight) to take effect without requiring an HA restart, and prevents permanent blocking of registers that may be added in future updates.
+
+### Improved
+
+- **Register Block Exclusion Resilience:** The permanent exclusion mechanism for unsupported register blocks (e.g. `additional_data_3_2` on certain H1/H2 hardware) is now more resilient to firmware updates and temporary network issues. Blocks are re-tested daily instead of remaining excluded until HA restarts.
+
 
 ### Fixed
+
+- **MQTT Is Now an Optional Dependency:** `mqtt` was declared as a hard `dependencies` entry in the manifest, which forced Home Assistant's MQTT integration to be set up before this integration could load — even though MQTT here is entirely optional (internal Paho client, HA MQTT, or none). It is now an `after_dependencies` entry, so the integration loads without HA MQTT configured and still switches to the HA MQTT strategy automatically once that integration loads later.
+
+- **Inverter Card: Opening a Slot No Longer Activates It (v1.3.0):**
+In the Lovelace card, expanding a charge/discharge slot to edit it is now separate from activating it. Clicking the slot header only expands/collapses the editor (no register write); the checkbox is a dedicated per-slot activation that writes the time-enable bit. Previously slots 2-7 wrote the enable bitmask the moment they were opened, a slot counted as "enabled" as soon as any of its time/power fields had a pending write, and activating another slot could clobber (deactivate) a just-activated slot because the new mask was based on the lagging sensor value. The enable state now reflects only the hardware bitmask (optimistically the pending activation write), and activation reads the last written mask to avoid lost updates.
+
+- **MQTT Strategy No Longer Gets Stuck After a Config Change:**
+The MQTT publisher's `stop()` used to detach its component-loaded listener, but it was also called on every strategy/config switch in `update_config`, not just on unload. Once detached, the publisher could no longer notice HA's MQTT integration loading later, so the strategy stayed stuck on `NONE`/`PAHO` until the integration was reloaded. Client shutdown and listener teardown are now split (`stop_paho()` vs. `stop()`); config switches only stop the Paho client and keep the listener alive, so switching to HA MQTT after a later load works again.
+
+- **Editing a Charge/Discharge Slot No Longer Re-Enables It:** Previously, changing any field of a time slot (start/end time, day mask or power percent) unconditionally set that slot's bit in the `charge_time_enable`/`discharge_time_enable` bitmask. A slot the user had intentionally disabled reappeared as active whenever its values were adjusted. Slot edits now leave the enable bitmask untouched; enabling/disabling a slot is done solely through the dedicated time-enable entity.
+
+- **Fast-Poll Sensors Ignored Disabled-by-Default Setting:** The fast variant of a fast-poll sensor forced `entity_registry_enabled_default = True`, so sensors that are disabled by default (or that the user intentionally disabled in their base description) reappeared as an enabled "Fast …" entity. Fast variants now inherit the base sensor's enabled-default.
+
+- **Passive Battery Block Never Excluded on Unsupported Firmware:** `read_passive_battery_data` (register block `0x3636`) swallowed the internal `BlockUnsupportedError`, so on devices that do not serve this block the hub retried it every 60 s poll cycle and logged repeated errors indefinitely. The error is now propagated so the block is permanently excluded after 3 consecutive rejections (with daily re-test), consistent with all other register blocks.
+
+- **Circuit Breaker Stuck in HALF_OPEN:**
+Fixed a bug where the Modbus circuit breaker could remain permanently in the HALF_OPEN state if a recovery probe reached the device but raised a non-connection error (e.g. an unsupported register or IO error). In that case every subsequent Modbus call was rejected with "Circuit Breaker is HALF_OPEN (probe in progress)" until the integration was reloaded. The breaker now correctly closes when the probe proves the connection is healthy, letting the non-connection error propagate normally.
+
+---
+
+## v2.9.1
+
 - **Permanent Block Exclusion for Unsupported Registers (Issues #177, #180, #183):** Register blocks that are not served by the device firmware (e.g. `additional_data_3_2` on SAJ H1 models and certain H2 hardware variants returning `ExceptionResponse` with code 65 or similar) are now automatically and permanently excluded from polling after 3 consecutive rejections. Previously, each poll wasted up to 10+ seconds on retries and filled the log with retry warnings before the circuit breaker opened and blanked all entities. Now: the first 3 rejections are logged at DEBUG level; on the 3rd, a single WARNING is emitted (`Block … permanently disabled: not supported by this device firmware`) and the block is skipped for the remainder of the session. No manual configuration or source-code edits required.
 - **Non-retriable ExceptionResponse:** All `ExceptionResponse` codes returned by the device (except code 4 — "Slave Device Failure", which may be transient) are now treated as deterministic rejections and raise immediately without retrying. This eliminates the 3-attempt backoff loop (previously ~10 s) whenever a device signals an unsupported register.
 
 ### Performance & Architecture
+- **Per-Inverter Reconnect Lock (Multi-Inverter)**: The in-retry reconnect handler used a module-level reconnect lock/event shared across every configured inverter, so a hanging reconnect on one device stalled reconnect handling for all of them. Reconnect now takes the per-connection socket lock instead, so each inverter recovers independently — and, because it is the same lock reads/writes use, the socket can no longer be closed under an in-flight operation.
+- **Unified Modbus Socket Lock (Reads/Writes/Reconnect)**: Reads and writes previously used two independent locks, so a poll cycle and a register write could touch the same `AsyncModbusTcpClient` socket at the same time — pymodbus cannot serve concurrent operations on one TCP connection, which could mix up request/response pairs and corrupt entity values under load. A single per-connection socket lock (owned by the connection manager) now serialises all reads, writes and the hub-level reconnect, and the reconnect holds that lock while closing/re-opening the socket so it can no longer be torn down under an in-flight operation. Writer priority and the ultra-fast skip logic are unchanged.
+- **Direct Writes to Packed Slot Registers Rejected**: Extended the read-modify-write guard in `hub._write_register` beyond the two merge-locked state/mask registers (`0x3604`/`0x3605`) to also cover all packed charge/discharge slot registers (day-mask in the high byte, power-percent in the low byte). A direct write to these would clobber the sibling field; such calls now raise instead, forcing the safe `merge_write_register` path. Defensive hardening — no current caller triggered this, and all legitimate merged writes are unaffected.
 - **Lock Management & Deadlock Prevention**: Replaced `threading.Lock` with `asyncio.Lock` in `hub.py`. Eliminated potential deadlocks when using nested `_lock_order_guard` and `_write_lock` combinations in the read-modify-write path.
 - **Entity State Updates (Fast-Poll)**: Overhauled `_cleanup_fast_listener` in `sensor.py` using a thread-safe `asyncio.Event` to eliminate race conditions and database-heavy double registrations during entity reloads.
 - **UI Responsiveness (Dual-Debounce)**: Re-wrote optimistic UI state flushes in `charge_control.py`. Immediate UI confirmation happens after 200 ms (`_FIRST_FLUSH_DELAY`), while rapid sequential slides/clicks are throttled at 500 ms.
@@ -13,6 +56,18 @@
 - **Startup Sync Tuning**: Fast-poll loops now explicitly wait for the `EVENT_HOMEASSISTANT_STARTED` event instead of static 30s delays, eliminating boot-sequence race conditions.
 
 ### Fixes & Code Quality
+- **`AddConfigEntryEntitiesCallback`**: All entity platforms now type their add-entities callback as `AddConfigEntryEntitiesCallback`, the current config-entry-aware variant (no behavior change).
+- **Config Entry `runtime_data`**: Per-entry state (the hub and its device info) is now stored in the typed `entry.runtime_data` instead of a manual `hass.data[DOMAIN][entry_id]` dictionary, following current Home Assistant conventions. No user-visible change; simplifies setup/unload and removes global bookkeeping.
+- **Modernized Options Flow**: The options flow no longer uses the deprecated `OptionsFlowWithConfigEntry` base class and no longer receives the config entry via its constructor; it uses the `self.config_entry` property provided by Home Assistant (no behavior change).
+- **Dropped Deprecated `CONNECTION_CLASS`**: Removed the obsolete `CONNECTION_CLASS` attribute from the config flow; the connection class is already conveyed by `iot_class` in the manifest (no behavior change).
+- **Explicit `integration_type`**: The manifest now declares `"integration_type": "hub"` explicitly instead of relying on the default, as recommended by the Home Assistant integration spec (no behavior change).
+- **Fast Coordinator Started After Platform Setup**: `start_fast_updates()` now runs after `async_forward_entry_setups` in `async_setup_entry`, so the fast/ultra-fast loop is only started once the entity platforms (and their fast listeners) are registered. Robustness hardening — the first tick was already ≥1 s in the future, so no behavior change in practice.
+- **Modernized Type Annotations**: `modbus_readers.py` now uses `from __future__ import annotations` and builtin `dict`/`list` generics instead of `typing.Dict`/`typing.List`, aligning it with the rest of the integration (no behavior change).
+- **Future Annotations in `switch.py`**: Added the missing `from __future__ import annotations` import to `switch.py` for consistency with the rest of the integration (no behavior change).
+- **HA-Native Flush Scheduling**: The debounced UI state flush in `charge_control.py` now uses Home Assistant's `async_call_later` helper instead of the raw `hass.loop.call_later`/`call_soon` timers, so the scheduled callback is properly tracked and cancelled by HA's event system.
+- **Module-Level `random` Import**: Moved the `random` import in `charge_control.py` out of the write-retry loop to module scope (minor cleanup, no behavior change).
+- **Correct Fast-Update Debug Log**: The fast-poll debug log (`Fast update for … : old -> new`) printed the new value on both sides because the cached value was overwritten before logging. It now captures the previous value first and shows the real transition.
+- **Removed Unused Switch Entity Registry**: The switch platform stored its entities in `hass.data[DOMAIN][entry.entry_id]["entities"]`, but nothing ever read that list. Removed the dead storage, which also prevented the list from growing across failed reloads.
 - **Async Unload Robustness**: Wrapped each step in `async_unload_entry` in explicit `try/except` guards to ensure `connection.close()` executes even if tasks like `mqtt.stop()` crash, preventing socket memory leaks.
 - **TOCTOU Race Condition**: Fixed a TOCTOU (Time-Of-Check to Time-Of-Use) loop evasion in `_async_update_fast`, ensuring ultra-fast callbacks reliably pause during write operations and catch up correctly via atomic lock flags.
 - **Duplicate MQTT Publishing**: Mitigated a bug where fast-poll/ultra-fast sensors were accidentally pushed to the broker twice (once by the fast loop, once via 60s slow loop `mqtt_publish_all`).

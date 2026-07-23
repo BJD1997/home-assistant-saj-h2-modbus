@@ -7,7 +7,7 @@
  * - Protects specific input interactions (time, range) from disruptive re-renders.
  *
  * @author stanu74 
- * @version 1.2.3
+ * @version 1.3.0
  */
 
 class SajH2InverterCard extends HTMLElement {
@@ -59,6 +59,11 @@ class SajH2InverterCard extends HTMLElement {
     this._debounceTimeouts = {}; // Generic debounce storage
     this._showAllChargeSlots = false;
     this._showAllDischargeSlots = false;
+    // Client-side expand/collapse state per slot (independent of activation).
+    // Opening a slot only reveals its editor; it never writes the enable bit.
+    // Slot 1 (index 0) starts expanded to match the previous default layout.
+    this._expandedChargeSlots = new Set([0]);
+    this._expandedDischargeSlots = new Set([0]);
   }
 
   // Called by Lovelace when configuration is set
@@ -317,6 +322,16 @@ class SajH2InverterCard extends HTMLElement {
     
     const inputsDisabled = pendingWrite;
 
+    // Explicit-activation model: a slot's enable state comes ONLY from the
+    // hardware bitmask (or, briefly, the pending value we just wrote when the
+    // user toggled the activation checkbox) — never from editing its time/power.
+    // Opening a slot to edit must not activate it.
+    const timeEnableNumber = this._hass.states[this._entities.chargeTimeEnable];
+    const enableWritePending = timeEnableNumber?.attributes?.pending_write === true;
+    const effectiveEnableMask = enableWritePending
+        ? (parseInt(timeEnableNumber.state) || 0)
+        : timeEnableValue;
+
     // Collect slot configuration and errors
     let slotErrors = [];
     const slots = (this._entities.chargeSlots || []).map((slotConfig, i) => {
@@ -334,22 +349,15 @@ class SajH2InverterCard extends HTMLElement {
           slotErrors.push(`Slot ${i+1}: ${missing || 'invalid config'}`);
       }
 
-      const sensorEnabled = (timeEnableValue & (1 << i)) !== 0;
-      // Check for pending data on this slot's entities (Optimistic UI)
-      const hasPendingData = (
-          sStart?.attributes?.pending_write === true ||
-          sEnd?.attributes?.pending_write === true ||
-          sPower?.attributes?.pending_write === true ||
-          sMask?.attributes?.pending_write === true
-      );
-      
-      const enabled = sensorEnabled || hasPendingData;
-      
+      // Enable state is driven purely by the (optimistic) hardware bitmask,
+      // NOT by pending edits to this slot's time/power fields.
+      const enabled = (effectiveEnableMask & (1 << i)) !== 0;
+
       // Use sensor value if available, otherwise fallback to input value. Prefer pending input value if writing.
-      const dayMaskValue = (sMask?.attributes?.pending_write) 
-          ? (parseInt(sMask.state) || 0) 
+      const dayMaskValue = (sMask?.attributes?.pending_write)
+          ? (parseInt(sMask.state) || 0)
           : (sMaskSensor ? (parseInt(sMaskSensor.state) || 0) : (valid ? parseInt(sMask.state) || 0 : 0));
-      
+
       // DEBUG LOGGING per slot
       if (this._debug && i === 0) { // Only log slot 1 to avoid spam
           console.log(`  - Slot ${i+1}: enabled=${enabled}, bit=${(timeEnableValue & (1 << i))}, chargingEnabled=${chargingEnabled}, mask=${dayMaskValue}`);
@@ -383,7 +391,7 @@ class SajH2InverterCard extends HTMLElement {
 
     const html = `
       <div class="section charging-section">
-        <div class="section-header">Charging Settings (Version 1.2.2)</div>
+        <div class="section-header">Charging Settings (Version 1.3.0)</div>
         ${!chargingEnabled && !pendingWrite ? '<div class="hint-message">ℹ️ Charging is currently disabled. <b>Start time, end time and power are essential.</b></div>' : ''}
         ${pendingWrite ? '<div class="hint-message">🕓 Settings pending confirmation via Modbus...</div>' : ''}
         <div class="subsection">
@@ -418,17 +426,21 @@ class SajH2InverterCard extends HTMLElement {
     const chargingSwitch = this._hass.states[this._entities.chargingSwitch];
     const chargingEnabled = chargingSwitch?.state === 'on';
     const isActiveSlot = chargingEnabled && slot.enabled;
+    const expanded = this._expandedChargeSlots.has(slot.index);
 
     return `
       <div class="charge-slot ${slot.enabled ? 'enabled' : 'disabled'} ${isActiveSlot ? 'active-slot' : ''} ${parentPendingWrite || timeEnablePending ? 'pending' : ''}">
-        ${slotHasPendingData ? this._renderPendingOverlay(`Slot ${slot.index+1} activation in progress`) : ''}
+        ${slotHasPendingData ? this._renderPendingOverlay(`Slot ${slot.index+1} update in progress`) : ''}
         <div class="slot-header">
-          <label class="slot-checkbox">
+          <label class="slot-checkbox" title="Activate this slot">
             <input type="checkbox" id="charge-slot-${slot.index}-enabled" ${slot.enabled ? 'checked' : ''} ${checkboxDisabled ? 'disabled' : ''} />
-            <span>Charge Slot ${slot.index+1}${isActiveSlot ? ' ●' : ''}</span>
           </label>
+          <div class="slot-title" id="charge-slot-${slot.index}-title">
+            <span>Charge Slot ${slot.index+1}${isActiveSlot ? ' ●' : ''}</span>
+            <span class="slot-expand-icon">${expanded ? '▾' : '▸'}</span>
+          </div>
         </div>
-        <div class="slot-content ${slot.enabled ? 'visible' : 'hidden'}">
+        <div class="slot-content ${expanded ? 'visible' : 'hidden'}">
           <div class="time-power-container">
             <div class="time-power-row">
               ${this._renderTimeSelects(`charge-slot-${slot.index}`, slot.startTime, slot.endTime, slot.power, contentDisabled)}
@@ -470,6 +482,15 @@ class SajH2InverterCard extends HTMLElement {
     
     const inputsDisabled = pendingWrite;
 
+    // Explicit-activation model (see charging section): enable state comes only
+    // from the hardware bitmask / pending activation write, never from editing
+    // a slot's time/power fields.
+    const timeEnableNumber = this._hass.states[this._entities.dischargeTimeEnable];
+    const enableWritePending = timeEnableNumber?.attributes?.pending_write === true;
+    const effectiveEnableMask = enableWritePending
+        ? (parseInt(timeEnableNumber.state) || 0)
+        : timeEnableValue;
+
     // Collect slot configuration and errors
     let slotErrors = [];
     const slots = (this._entities.dischargeSlots || []).map((slotConfig, i) => {
@@ -487,16 +508,9 @@ class SajH2InverterCard extends HTMLElement {
           slotErrors.push(`Slot ${i+1}: ${missing || 'invalid config'}`);
       }
 
-      const sensorEnabled = (timeEnableValue & (1 << i)) !== 0;
-      // Check for pending data on this slot's entities (Optimistic UI)
-      const hasPendingData = (
-          sStart?.attributes?.pending_write === true ||
-          sEnd?.attributes?.pending_write === true ||
-          sPower?.attributes?.pending_write === true ||
-          sMask?.attributes?.pending_write === true
-      );
-      
-      const enabled = sensorEnabled || hasPendingData;
+      // Enable state is driven purely by the (optimistic) hardware bitmask,
+      // NOT by pending edits to this slot's time/power fields.
+      const enabled = (effectiveEnableMask & (1 << i)) !== 0;
 
       // Use sensor value if available, otherwise fallback to input value. Prefer pending input value if writing.
       const dayMaskValue = (sMask?.attributes?.pending_write) 
@@ -566,17 +580,21 @@ class SajH2InverterCard extends HTMLElement {
     const dischargingSwitch = this._hass.states[this._entities.dischargingSwitch];
     const dischargingEnabled = dischargingSwitch?.state === 'on';
     const isActiveSlot = dischargingEnabled && slot.enabled;
+    const expanded = this._expandedDischargeSlots.has(slot.index);
 
     return `
       <div class="discharge-slot ${slot.enabled ? 'enabled' : 'disabled'} ${isActiveSlot ? 'active-slot' : ''} ${parentPendingWrite || timeEnablePending ? 'pending' : ''}">
-        ${slotHasPendingData ? this._renderPendingOverlay(`Slot ${slot.index+1} activation in progress`) : ''}
+        ${slotHasPendingData ? this._renderPendingOverlay(`Slot ${slot.index+1} update in progress`) : ''}
         <div class="slot-header">
-          <label class="slot-checkbox">
+          <label class="slot-checkbox" title="Activate this slot">
             <input type="checkbox" id="slot-${slot.index}-enabled" ${slot.enabled ? 'checked' : ''} ${checkboxDisabled ? 'disabled' : ''} />
-            <span>Slot ${slot.index+1}${isActiveSlot ? ' ●' : ''}</span>
           </label>
+          <div class="slot-title" id="slot-${slot.index}-title">
+            <span>Slot ${slot.index+1}${isActiveSlot ? ' ●' : ''}</span>
+            <span class="slot-expand-icon">${expanded ? '▾' : '▸'}</span>
+          </div>
         </div>
-        <div class="slot-content ${slot.enabled ? 'visible' : 'hidden'}">
+        <div class="slot-content ${expanded ? 'visible' : 'hidden'}">
           <div class="time-power-container">
             <div class="time-power-row">
               ${this._renderTimeSelects(`slot-${slot.index}`, slot.startTime, slot.endTime, slot.power, contentDisabled)}
@@ -780,54 +798,54 @@ class SajH2InverterCard extends HTMLElement {
       const slotElement = q(`#charge-slot-${i}-enabled`)?.closest('.charge-slot');
       if (!slotElement) return;
 
-      // Slot Enable Checkbox
+      // Slot Enable Checkbox = explicit activation (writes the enable bit).
+      // Uniform for ALL slots: opening a slot no longer writes anything;
+      // only ticking this checkbox activates/deactivates the slot.
       const chk = q(`#charge-slot-${i}-enabled`);
       if (chk && !chk.hasAttribute('data-listener-added')) {
         chk.setAttribute('data-listener-added', 'true');
         chk.addEventListener('change', () => {
-            // SPECIAL HANDLING FOR SLOT 1 (index 0)
-            if (i === 0) {
-                const content = slotElement.querySelector('.slot-content');
-                if (content) {
-                    content.classList.toggle('hidden', !chk.checked);
-                    content.classList.toggle('visible', chk.checked);
-                }
-                if (this._debug) {
-                    console.log(`[saj-h2-inverter-card] Slot 1 checkbox toggled (no register write)`);
-                }
-                return;
-            }
-            
-            // FOR SLOTS 2-7: Read current mask from SENSOR (not NUMBER!)
+            // Base the new mask on the last written value while a bitmask write
+            // is still pending (pending_write on the NUMBER entity), otherwise
+            // on the hardware SENSOR. This prevents a second activation from
+            // clobbering a slot that was just activated but not yet confirmed.
+            const timeEnableNumber = this._hass.states[timeEnableEntityId];
             const timeEnableSensor = this._hass.states[timeEnableSensorId];
-            if (!timeEnableSensor) {
+            if (!timeEnableSensor && !timeEnableNumber) {
                 console.error(`[saj-h2-inverter-card] Sensor ${timeEnableSensorId} not found in hass state.`);
                 chk.checked = !chk.checked;
                 return;
             }
-            
-            // IMPORTANT: Read currentMask from SENSOR (actual hardware status)
-            const currentMask = parseInt(timeEnableSensor.state || '0');
+            const currentMask = (timeEnableNumber?.attributes?.pending_write === true)
+                ? (parseInt(timeEnableNumber.state) || 0)
+                : (parseInt(timeEnableSensor?.state || '0') || 0);
             const bit = 1 << i;
             const newMask = chk.checked ? (currentMask | bit) : (currentMask & ~bit);
-            
+
             if (this._debug) {
                 console.log(
-                    `[saj-h2-inverter-card] Slot ${i+1} checkbox: ` +
+                    `[saj-h2-inverter-card] Slot ${i+1} activation: ` +
                     `currentMask=${currentMask} (binary: ${currentMask.toString(2).padStart(7, '0')}), ` +
                     `bit=${bit}, newMask=${newMask} (binary: ${newMask.toString(2).padStart(7, '0')})`
                 );
             }
-            
+
             // Write newMask to NUMBER entity
             this._setEntityValue(timeEnableEntityId, newMask, 'number');
-            
-            // Show/hide slot content optimistically
-            const content = slotElement.querySelector('.slot-content');
-            if (content) {
-                content.classList.toggle('hidden', !chk.checked);
-                content.classList.toggle('visible', chk.checked);
+        });
+      }
+
+      // Slot header title = expand/collapse (client-side only, no write)
+      const title = q(`#charge-slot-${i}-title`);
+      if (title && !title.hasAttribute('data-listener-added')) {
+        title.setAttribute('data-listener-added', 'true');
+        title.addEventListener('click', () => {
+            if (this._expandedChargeSlots.has(i)) {
+                this._expandedChargeSlots.delete(i);
+            } else {
+                this._expandedChargeSlots.add(i);
             }
+            this._renderCard();
         });
       }
 
@@ -910,53 +928,51 @@ class SajH2InverterCard extends HTMLElement {
       const slotElement = q(`#slot-${i}-enabled`)?.closest('.discharge-slot');
       if (!slotElement) return;
 
-      // Slot Enable Checkbox
+      // Slot Enable Checkbox = explicit activation (writes the enable bit).
+      // Uniform for ALL slots; opening a slot no longer writes anything.
       const chk = q(`#slot-${i}-enabled`);
       if (chk && !chk.hasAttribute('data-listener-added')) {
         chk.setAttribute('data-listener-added', 'true');
         chk.addEventListener('change', () => {
-            // SPECIAL HANDLING FOR SLOT 1 (index 0)
-            if (i === 0) {
-                const content = slotElement.querySelector('.slot-content');
-                if (content) {
-                    content.classList.toggle('hidden', !chk.checked);
-                    content.classList.toggle('visible', chk.checked);
-                }
-                if (this._debug) {
-                    console.log(`[saj-h2-inverter-card] Discharge Slot 1 checkbox toggled (no register write)`);
-                }
-                return;
-            }
-            
-            // FOR SLOTS 2-7: Read current mask from SENSOR (not NUMBER!)
+            // Prefer the last written (pending) value over the lagging sensor so
+            // a second activation cannot clobber a just-activated slot.
+            const timeEnableNumber = this._hass.states[timeEnableEntityId];
             const timeEnableSensor = this._hass.states[timeEnableSensorId];
-            if (!timeEnableSensor) {
+            if (!timeEnableSensor && !timeEnableNumber) {
                 console.error(`[saj-h2-inverter-card] Sensor ${timeEnableSensorId} not found in hass state.`);
                 chk.checked = !chk.checked;
                 return;
             }
-            
-            // IMPORTANT: Read currentMask from SENSOR (actual hardware status)
-            const currentMask = parseInt(timeEnableSensor.state || '0');
+            const currentMask = (timeEnableNumber?.attributes?.pending_write === true)
+                ? (parseInt(timeEnableNumber.state) || 0)
+                : (parseInt(timeEnableSensor?.state || '0') || 0);
             const bit = 1 << i;
             const newMask = chk.checked ? (currentMask | bit) : (currentMask & ~bit);
-            
+
             if (this._debug) {
                 console.log(
-                    `[saj-h2-inverter-card] Discharge Slot ${i+1} checkbox: ` +
+                    `[saj-h2-inverter-card] Discharge Slot ${i+1} activation: ` +
                     `currentMask=${currentMask} (binary: ${currentMask.toString(2).padStart(7, '0')}), ` +
                     `bit=${bit}, newMask=${newMask} (binary: ${newMask.toString(2).padStart(7, '0')})`
                 );
             }
-            
+
             // Write newMask to NUMBER entity
             this._setEntityValue(timeEnableEntityId, newMask, 'number');
-            
-            const content = slotElement.querySelector('.slot-content');
-            if (content) {
-                content.classList.toggle('hidden', !chk.checked);
-                content.classList.toggle('visible', chk.checked);
+        });
+      }
+
+      // Slot header title = expand/collapse (client-side only, no write)
+      const title = q(`#slot-${i}-title`);
+      if (title && !title.hasAttribute('data-listener-added')) {
+        title.setAttribute('data-listener-added', 'true');
+        title.addEventListener('click', () => {
+            if (this._expandedDischargeSlots.has(i)) {
+                this._expandedDischargeSlots.delete(i);
+            } else {
+                this._expandedDischargeSlots.add(i);
             }
+            this._renderCard();
         });
       }
 
@@ -1337,7 +1353,10 @@ class SajH2InverterCard extends HTMLElement {
       .discharge-slot.invalid { border-left-color: var(--error-color); background-color: rgba(var(--error-color-rgb), 0.05); color: var(--error-color); font-weight: 500; padding: 10px 16px; }
       .discharge-slot.pending { opacity: 0.7; }
       .discharge-slot.pending .slot-content > * { pointer-events: none; opacity: 0.7; }
-      .slot-header { cursor: default; padding-bottom: 8px; }
+      .slot-header { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
+      .slot-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1; cursor: pointer; user-select: none; }
+      .slot-title span:first-child { font-size: 1.1em; font-weight: 500; }
+      .slot-expand-icon { font-size: 0.9em; opacity: 0.7; }
       .slot-checkbox { display: flex; align-items: center; gap: 8px; cursor: pointer; width: fit-content;}
       .slot-checkbox input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary-color); cursor: pointer; }
       .slot-checkbox input[type="checkbox"]:disabled { cursor: not-allowed; accent-color: var(--disabled-text-color); opacity: 0.7;}

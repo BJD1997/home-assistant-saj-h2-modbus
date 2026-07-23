@@ -1,12 +1,13 @@
+from __future__ import annotations
+
 import logging
 import time
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .hub import SAJModbusHub
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,11 +44,11 @@ SWITCH_DEFINITIONS = [
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     """Set up SAJ switches."""
-    hub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
     for desc in SWITCH_DEFINITIONS:
@@ -59,11 +60,6 @@ async def async_setup_entry(
         entities.append(entity)
 
     async_add_entities(entities)
-
-    # Register entities in hass.data for direct access by charge_control
-    if "entities" not in hass.data[DOMAIN][entry.entry_id]:
-        hass.data[DOMAIN][entry.entry_id]["entities"] = []
-    hass.data[DOMAIN][entry.entry_id]["entities"].extend(entities)
 
     _LOGGER.info("Added SAJ switches")
 
@@ -166,7 +162,7 @@ class BaseSajSwitch(CoordinatorEntity, SwitchEntity):
                     return
                 await setter(desired_state)
 
-            self._last_switch_time = time.time()
+            self._last_switch_time = time.monotonic()
             pending_value = getattr(self._hub, self._pending_attr, None)
             _LOGGER.debug("Pending %s set to: %s", self._pending_attr, pending_value)
 
@@ -203,7 +199,7 @@ class BaseSajSwitch(CoordinatorEntity, SwitchEntity):
         return state_value and app_mode_value == 1
 
     def _allow_switch(self) -> bool:
-        current_time = time.time()
+        current_time = time.monotonic()
         elapsed = current_time - self._last_switch_time
         if elapsed < self._switch_timeout:
             remaining = round(self._switch_timeout - elapsed, 1)

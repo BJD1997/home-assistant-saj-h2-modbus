@@ -7,20 +7,20 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN, SENSOR_TYPES, SajModbusSensorEntityDescription
+from .const import SENSOR_TYPES, SajModbusSensorEntityDescription
 from .hub import SAJModbusHub, FAST_POLL_SENSORS, ADVANCED_LOGGING
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     """Set up SAJ sensors from a config entry."""
-    hub: SAJModbusHub = hass.data[DOMAIN][entry.entry_id]["hub"]
-    device_info = hass.data[DOMAIN][entry.entry_id]["device_info"]
+    hub: SAJModbusHub = entry.runtime_data
+    device_info = hub.device_info
 
     entities = []
     for description in SENSOR_TYPES.values():
@@ -208,6 +208,7 @@ class SajSensor(CoordinatorEntity, SensorEntity):
         # Update if value changed OR force_update is enabled
         force_update = bool(self._attr_force_update)
         if new_value != self._last_value or force_update:
+            old_value = self._last_value
             self._last_value = new_value
             self.async_write_ha_state()
 
@@ -215,7 +216,7 @@ class SajSensor(CoordinatorEntity, SensorEntity):
                 _LOGGER.debug(
                     "Fast update for %s: %s -> %s",
                     self._attr_name,
-                    self._last_value,
+                    old_value,
                     new_value,
                 )
 
@@ -261,5 +262,6 @@ class FastPollSensor(SajSensor):
     ):
         """Initialize the fast-poll sensor."""
         super().__init__(hub, device_info, description, is_fast_variant=True)
-        # Fast variants are always enabled by default for live monitoring
-        self._attr_entity_registry_enabled_default = True
+        # Enabled-default is inherited from the base description via
+        # SajSensor.__init__, so sensors the user intentionally disabled do
+        # not reappear through their fast variant.
